@@ -25,8 +25,9 @@ $SHEET_VENDAS  = "1eOfyHZhI7Bd6gWrkRIrcvbBHH6HFhCW5bvlntiJdJEA"  # Hotmart venda
 $GID_VENDAS    = "0"
 $TAX           = 1.1385   # imposto Meta Ads
 
-# Filtro do LANCAMENTO (imersao): nome da campanha contem qualquer um destes (case/acento-insensitive)
-$LAUNCH_KEYS   = @("IHF", "IMERSAO", "TF | TOPO", "TF|TOPO")
+# Filtro do LANCAMENTO (operacao atual): nome da campanha contem qualquer um destes (case/acento-insensitive)
+# Mantem IHF-AGO26... e "TF | Topo..." (e as novas que seguirem esse padrao). Exclui as [VENDAS][IMERSAOHF11.07]* pre-operacao.
+$LAUNCH_KEYS   = @("IHF", "TF | TOPO", "TF|TOPO")
 
 $OutFile = Join-Path $PSScriptRoot "data.js"
 
