@@ -111,6 +111,8 @@
     var ticket = div(c.fat, c.vendas);
     var cac = div(c.spend, c.vendas);
     var custoCompra = div(c.spend, c.purPixel);
+    var ic = c.vendas + c.checkouts;
+    var icP = p ? (p.vendas + p.checkouts) : null;
     var cards = [
       kpiCard('Investimento', money0(c.spend), false, deltaHtml(c.spend, p && p.spend, false), 'com imposto ×1,1385', 'accent-l'),
       kpiCard('Faturamento (Hotmart)', money0(c.fat), false, deltaHtml(c.fat, p && p.fat, true), int(c.vendas) + ' venda(s) aprovada(s)'),
@@ -119,7 +121,9 @@
       kpiCard('CAC (custo/venda)', c.vendas ? money(cac) : '—', true, deltaHtml(c.vendas ? cac : 0, p && p.vendas ? div(p.spend, p.vendas) : null, false), 'investimento ÷ vendas'),
       kpiCard('Compras (pixel)', int(c.purPixel), false, deltaHtml(c.purPixel, p && p.purPixel, true), 'atribuídas por anúncio'),
       kpiCard('Custo/compra (pixel)', c.purPixel ? money(custoCompra) : '—', true, '', 'investimento ÷ compras'),
-      kpiCard('Checkouts iniciados', int(c.checkouts), false, deltaHtml(c.checkouts, p && p.checkouts, true), 'Hotmart (quase-vendas)')
+      kpiCard('Iniciar checkout (IC)', int(ic), false, deltaHtml(ic, icP, true), 'Hotmart: chegaram ao checkout'),
+      kpiCard('Taxa de checkout', c.lpv ? pct(div(ic, c.lpv)) : '—', true, '', 'IC ÷ landing page views'),
+      kpiCard('Conversão de checkout', ic ? pct(div(c.vendas, ic)) : '—', true, '', 'vendas ÷ IC')
     ];
     el('kpis').innerHTML = cards.join('');
   }
@@ -182,11 +186,13 @@
   }
 
   function renderFunnel(c) {
+    var ic = c.vendas + c.checkouts; // Iniciar Checkout (Hotmart: aprovadas + abandonos)
     var stages = [
       { n: 'Impressões', v: c.impr, fmt: int, col: 'var(--brand)' },
       { n: 'Cliques no link', v: c.clk, fmt: int, col: 'var(--brand2)', conv: 'CTR ' + pct(div(c.clk, c.impr)) },
       { n: 'Landing Page Views', v: c.lpv, fmt: int, col: 'var(--cyan)', conv: pct(div(c.lpv, c.clk)) + ' dos cliques' },
-      { n: 'Compras (pixel)', v: c.purPixel, fmt: int, col: 'var(--green)', conv: pct(div(c.purPixel, c.lpv)) + ' das LPV' }
+      { n: 'Iniciar checkout (IC)', v: ic, fmt: int, col: 'var(--amber)', conv: 'Taxa de checkout: ' + pct(div(ic, c.lpv)) + ' das LPV' },
+      { n: 'Vendas (Hotmart)', v: c.vendas, fmt: int, col: 'var(--green)', conv: 'Conversão de checkout: ' + pct(div(c.vendas, ic)) + ' dos IC' }
     ];
     var max = Math.max(1, c.impr);
     var html = '<div class="fstage" style="margin-bottom:16px"><div class="fhead"><span class="fn">Investimento</span>' +
@@ -347,6 +353,7 @@
     el('hint').innerHTML = 'Fonte dos anúncios: Adveronix (Pixel <code>' + esc(D.product ? '' : '') + '2070377586792193</code>) · Fonte das vendas: Hotmart. ' +
       'Filtro do lançamento: campanhas contendo <b>' + esc(keys) + '</b>. Gasto com imposto ×' + num2(D.tax || 1.1385) + '. ' +
       'Somente leitura — nada é alterado nas planilhas. ' +
+      '<br><b>IC (iniciar checkout)</b> = quem chegou ao checkout da Hotmart (aprovadas + abandonos) · <b>Taxa de checkout</b> = IC ÷ LPV · <b>Conversão de checkout</b> = vendas ÷ IC. ' +
       '<br>As campanhas do lançamento começaram no aquecimento (mai/jun) e as vendas em julho — use o seletor de período para focar na janela que interessa.';
   }
 
