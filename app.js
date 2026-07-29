@@ -73,7 +73,6 @@
     renderFunilInv(r);
     renderKpis(cur, prev);
     renderFunnel(cur);
-    renderRecon(cur);
     renderChart(r);
     renderTable(r);
     renderHint();
@@ -114,7 +113,6 @@
     var roasP = p ? div(p.fat, svP) : null;
     var ticket = div(c.fat, c.vendas);
     var cac = div(sv, c.vendas);
-    var custoCompra = div(sv, c.purPixel);
     var ic = c.vendas + c.checkouts;
     var icP = p ? (p.vendas + p.checkouts) : null;
     var cards = [
@@ -123,8 +121,6 @@
       kpiCard('ROAS real', num2(roas) + 'x', false, deltaHtml(roas, roasP, true), 'faturamento ÷ invest. em venda'),
       kpiCard('Ticket médio', c.vendas ? money(ticket) : '—', true, '', 'por venda Hotmart'),
       kpiCard('CAC (custo/venda)', c.vendas ? money(cac) : '—', true, deltaHtml(c.vendas ? cac : 0, p && p.vendas ? div(svP, p.vendas) : null, false), 'invest. venda ÷ vendas'),
-      kpiCard('Compras (pixel)', int(c.purPixel), false, deltaHtml(c.purPixel, p && p.purPixel, true), 'atribuídas por anúncio'),
-      kpiCard('Custo/compra (pixel)', c.purPixel ? money(custoCompra) : '—', true, '', 'invest. venda ÷ compras'),
       kpiCard('Iniciar checkout (IC)', int(ic), false, deltaHtml(ic, icP, true), 'Hotmart: chegaram ao checkout'),
       kpiCard('Taxa de checkout', c.lpv ? pct(div(ic, c.lpv)) : '—', true, '', 'IC ÷ landing page views'),
       kpiCard('Conversão de checkout', ic ? pct(div(c.vendas, ic)) : '—', true, '', 'vendas ÷ IC')
@@ -217,18 +213,6 @@
         (s.conv ? '<div class="fconv">' + s.conv + '</div>' : '') + '</div>';
     }).join('');
     el('funnel').innerHTML = html;
-  }
-
-  function renderRecon(c) {
-    var diff = c.purPixel - c.vendas;
-    var html = '<div class="row">' +
-      '<div class="box"><div class="n" style="color:var(--brand)">' + int(c.purPixel) + '</div><div class="t">Compras (pixel)</div></div>' +
-      '<div class="box"><div class="n" style="color:var(--green)">' + int(c.vendas) + '</div><div class="t">Vendas (Hotmart)</div></div>' +
-      '</div>' +
-      '<div class="note">O <b>pixel</b> atribui a compra ao anúncio (otimização); a <b>Hotmart</b> é a fonte da verdade do faturamento. ' +
-      'Divergência de ' + (diff === 0 ? 'zero' : (diff > 0 ? '+' : '') + int(diff)) + ' é normal — janela de atribuição e perda de sinal. ' +
-      'Para cobrança/comissão, vale sempre a Hotmart.</div>';
-    el('recon').innerHTML = html;
   }
 
   // ---------- chart ----------
@@ -363,7 +347,8 @@
 
   function renderHint() {
     var keys = arr(D.launchKeys).join(', ');
-    el('hint').innerHTML = 'Fonte dos anúncios: Adveronix (Pixel <code>' + esc(D.product ? '' : '') + '2070377586792193</code>) · Fonte das vendas: Hotmart. ' +
+    el('hint').innerHTML = 'Faturamento e vendas: <b>Hotmart</b> (fonte da verdade). ' +
+      'A tabela de otimização usa o <b>pixel</b> (Adveronix, <code>2070377586792193</code>) só para atribuir compras por anúncio — sinal de otimização, não de faturamento. ' +
       'Filtro do lançamento: campanhas contendo <b>' + esc(keys) + '</b>. Gasto com imposto ×' + num2(D.tax || 1.1385) + '. ' +
       'Somente leitura — nada é alterado nas planilhas. ' +
       '<br><b>IC (iniciar checkout)</b> = quem chegou ao checkout da Hotmart (aprovadas + abandonos) · <b>Taxa de checkout</b> = IC ÷ LPV · <b>Conversão de checkout</b> = vendas ÷ IC. ' +
