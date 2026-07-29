@@ -64,6 +64,8 @@
     var pr = prevRangeFor(pd.days);
     var cur = aggDaily(r);
     var prev = pr ? aggDaily(pr) : null;
+    cur.spendVenda = spendByFunnel(r).Venda;
+    if (prev) prev.spendVenda = spendByFunnel(pr).Venda;
 
     renderPeriods();
     el('range').textContent = 'Período: ' + brDateFull(r.start) + ' → ' + brDateFull(r.end) + (pr ? '  ·  comparado com ' + brDateFull(pr.start) + ' → ' + brDateFull(pr.end) : '');
@@ -106,21 +108,23 @@
   }
 
   function renderKpis(c, p) {
-    var roas = div(c.fat, c.spend);
-    var roasP = p ? div(p.fat, p.spend) : null;
+    var sv = c.spendVenda || 0;
+    var svP = p ? (p.spendVenda || 0) : null;
+    var roas = div(c.fat, sv);
+    var roasP = p ? div(p.fat, svP) : null;
     var ticket = div(c.fat, c.vendas);
-    var cac = div(c.spend, c.vendas);
-    var custoCompra = div(c.spend, c.purPixel);
+    var cac = div(sv, c.vendas);
+    var custoCompra = div(sv, c.purPixel);
     var ic = c.vendas + c.checkouts;
     var icP = p ? (p.vendas + p.checkouts) : null;
     var cards = [
-      kpiCard('Investimento', money0(c.spend), false, deltaHtml(c.spend, p && p.spend, false), 'com imposto ×1,1385', 'accent-l'),
+      kpiCard('Investimento total', money0(c.spend), false, deltaHtml(c.spend, p && p.spend, false), 'Topo + Venda · imposto ×1,1385', 'accent-l'),
       kpiCard('Faturamento (Hotmart)', money0(c.fat), false, deltaHtml(c.fat, p && p.fat, true), int(c.vendas) + ' venda(s) aprovada(s)'),
-      kpiCard('ROAS real', num2(roas) + 'x', false, deltaHtml(roas, roasP, true), 'faturamento ÷ investimento'),
+      kpiCard('ROAS real', num2(roas) + 'x', false, deltaHtml(roas, roasP, true), 'faturamento ÷ invest. em venda'),
       kpiCard('Ticket médio', c.vendas ? money(ticket) : '—', true, '', 'por venda Hotmart'),
-      kpiCard('CAC (custo/venda)', c.vendas ? money(cac) : '—', true, deltaHtml(c.vendas ? cac : 0, p && p.vendas ? div(p.spend, p.vendas) : null, false), 'investimento ÷ vendas'),
+      kpiCard('CAC (custo/venda)', c.vendas ? money(cac) : '—', true, deltaHtml(c.vendas ? cac : 0, p && p.vendas ? div(svP, p.vendas) : null, false), 'invest. venda ÷ vendas'),
       kpiCard('Compras (pixel)', int(c.purPixel), false, deltaHtml(c.purPixel, p && p.purPixel, true), 'atribuídas por anúncio'),
-      kpiCard('Custo/compra (pixel)', c.purPixel ? money(custoCompra) : '—', true, '', 'investimento ÷ compras'),
+      kpiCard('Custo/compra (pixel)', c.purPixel ? money(custoCompra) : '—', true, '', 'invest. venda ÷ compras'),
       kpiCard('Iniciar checkout (IC)', int(ic), false, deltaHtml(ic, icP, true), 'Hotmart: chegaram ao checkout'),
       kpiCard('Taxa de checkout', c.lpv ? pct(div(ic, c.lpv)) : '—', true, '', 'IC ÷ landing page views'),
       kpiCard('Conversão de checkout', ic ? pct(div(c.vendas, ic)) : '—', true, '', 'vendas ÷ IC')
@@ -136,6 +140,14 @@
     if (/\bVND\b|E4-VEN|IHF|VENDA/.test(c)) return 'Venda';
     return 'Outros';
   }
+  function spendByFunnel(r) {
+    var o = { Topo: 0, Venda: 0, Outros: 0, total: 0 };
+    for (var i = 0; i < grain.length; i++) {
+      var x = grain[i]; if (!within(x.d, r)) continue;
+      o[funnelOf(x.camp)] += x.spend; o.total += x.spend;
+    }
+    return o;
+  }
   var FUNIL_META = {
     'Topo': { color: 'var(--cyan)', desc: 'topo de funil (alcance / visita ao perfil)' },
     'Venda': { color: 'var(--brand)', desc: 'conversão / venda direta' },
@@ -143,12 +155,13 @@
   };
 
   function renderRevBlock(c) {
-    var roas = div(c.fat, c.spend);
-    var preTax = c.spend / (D.tax || 1.1385);
+    var sv = c.spendVenda || 0;
+    var roas = div(c.fat, sv);
+    var preTax = sv / (D.tax || 1.1385);
     el('revblock').innerHTML =
-      '<div class="rev-card rev-inv"><div class="rev-top">💸 Investimento <span class="sub">com imposto</span></div>' +
-        '<div class="rev-val" style="color:var(--brand)">' + money0(c.spend) + '</div>' +
-        '<div class="rev-sub">sem imposto: ' + money0(preTax) + '</div></div>' +
+      '<div class="rev-card rev-inv"><div class="rev-top">💸 Investimento <span class="sub">em venda</span></div>' +
+        '<div class="rev-val" style="color:var(--brand)">' + money0(sv) + '</div>' +
+        '<div class="rev-sub">só campanha de venda · sem imposto ' + money0(preTax) + '</div></div>' +
       '<div class="rev-conn">→</div>' +
       '<div class="rev-card rev-rec"><div class="rev-top">💰 Faturamento <span class="sub">Hotmart</span></div>' +
         '<div class="rev-val" style="color:var(--green)">' + money0(c.fat) + '</div>' +
