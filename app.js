@@ -67,6 +67,8 @@
 
     renderPeriods();
     el('range').textContent = 'Período: ' + brDateFull(r.start) + ' → ' + brDateFull(r.end) + (pr ? '  ·  comparado com ' + brDateFull(pr.start) + ' → ' + brDateFull(pr.end) : '');
+    renderRevBlock(cur);
+    renderFunilInv(r);
     renderKpis(cur, prev);
     renderFunnel(cur);
     renderRecon(cur);
@@ -120,6 +122,63 @@
       kpiCard('Checkouts iniciados', int(c.checkouts), false, deltaHtml(c.checkouts, p && p.checkouts, true), 'Hotmart (quase-vendas)')
     ];
     el('kpis').innerHTML = cards.join('');
+  }
+
+  function taxMult() { return (D.tax || 1.1385).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 }); }
+
+  function funnelOf(camp) {
+    var c = String(camp || '').toUpperCase();
+    if (c.indexOf('TOPO') >= 0) return 'Topo';
+    if (/\bVND\b|E4-VEN|IHF|VENDA/.test(c)) return 'Venda';
+    return 'Outros';
+  }
+  var FUNIL_META = {
+    'Topo': { color: 'var(--cyan)', desc: 'topo de funil (alcance / visita ao perfil)' },
+    'Venda': { color: 'var(--brand)', desc: 'conversão / venda direta' },
+    'Outros': { color: 'var(--tx3)', desc: 'demais campanhas' }
+  };
+
+  function renderRevBlock(c) {
+    var roas = div(c.fat, c.spend);
+    var preTax = c.spend / (D.tax || 1.1385);
+    el('revblock').innerHTML =
+      '<div class="rev-card rev-inv"><div class="rev-top">💸 Investimento <span class="sub">com imposto</span></div>' +
+        '<div class="rev-val" style="color:var(--brand)">' + money0(c.spend) + '</div>' +
+        '<div class="rev-sub">sem imposto: ' + money0(preTax) + '</div></div>' +
+      '<div class="rev-conn">→</div>' +
+      '<div class="rev-card rev-rec"><div class="rev-top">💰 Faturamento <span class="sub">Hotmart</span></div>' +
+        '<div class="rev-val" style="color:var(--green)">' + money0(c.fat) + '</div>' +
+        '<div class="rev-sub">' + int(c.vendas) + ' venda(s) aprovada(s)</div></div>' +
+      '<div class="rev-conn">=</div>' +
+      '<div class="rev-card rev-roas"><div class="rev-top">📈 ROAS <span class="sub">real</span></div>' +
+        '<div class="rev-val" style="color:var(--violet)">' + num2(roas) + 'x</div>' +
+        '<div class="rev-sub">faturamento ÷ investimento</div></div>';
+  }
+
+  function renderFunilInv(r) {
+    var g = {}, total = 0;
+    for (var i = 0; i < grain.length; i++) {
+      var x = grain[i]; if (!within(x.d, r)) continue;
+      var f = funnelOf(x.camp);
+      if (!g[f]) g[f] = { spend: 0, clk: 0, lpv: 0, pur: 0, impr: 0 };
+      g[f].spend += x.spend; g[f].clk += x.clk; g[f].lpv += x.lpv; g[f].pur += x.pur; g[f].impr += x.impr;
+      total += x.spend;
+    }
+    var cards = ['Topo', 'Venda', 'Outros'].filter(function (k) { return g[k]; }).map(function (k) {
+      var o = g[k], m = FUNIL_META[k];
+      var share = total ? o.spend / total : 0;
+      var detail = (k === 'Venda')
+        ? (int(o.pur) + ' compra(s) · ' + int(o.lpv) + ' LPV')
+        : (int(o.impr) + ' impressões · ' + int(o.clk) + ' cliques');
+      return '<div class="card funil"><div class="fshare">' + pct(share) + '</div>' +
+        '<div class="ftop"><span class="fico" style="background:' + m.color + '"></span>' + k + '</div>' +
+        '<div class="fmain" style="color:' + m.color + '">' + money0(o.spend) + '</div>' +
+        '<div class="fmeta">' + m.desc + '<br>' + detail + '</div></div>';
+    });
+    cards.push('<div class="card funil total"><div class="ftop">Σ Total</div>' +
+      '<div class="fmain">' + money0(total) + '</div>' +
+      '<div class="fmeta">soma dos funis · com imposto ×' + taxMult() + '</div></div>');
+    el('funilInv').innerHTML = cards.join('');
   }
 
   function renderFunnel(c) {
@@ -293,6 +352,7 @@
 
   // ---------- boot ----------
   el('upd').innerHTML = '<span class="dot"></span>Atualizado: ' + esc(D.generatedAt || '—') + ' ' + esc(D.tz || 'BRT');
+  el('taxNote').innerHTML = '💸 Gasto inclui imposto × ' + taxMult() + ' (13,85%)';
   if (!daily.length) {
     el('kpis').innerHTML = '<div class="empty">Sem dados. Rode o build.</div>';
   } else {
