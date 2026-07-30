@@ -27,22 +27,53 @@
   // ---------- period ----------
   var minDate = daily.length ? daily[0].d : '2026-01-01';
   var maxDate = daily.length ? daily[daily.length - 1].d : '2026-01-01';
-  var PERIODS = [
-    { k: '7d', label: '7 dias', days: 7 },
-    { k: '14d', label: '14 dias', days: 14 },
-    { k: '30d', label: '30 dias', days: 30 },
-    { k: 'all', label: 'Todo o período', days: null }
-  ];
-  var state = { period: 'all', tab: 'ad' };
 
-  function rangeFor(days) {
-    if (!days) return { start: minDate, end: maxDate };
-    return { start: dayAdd(maxDate, -(days - 1)), end: maxDate };
+  function firstOfMonth(ds) { return ds.slice(0, 7) + '-01'; }
+  function lastOfMonth(ds) {
+    var p = ds.split('-'); var dt = new Date(Date.UTC(+p[0], +p[1], 0));
+    return dt.toISOString().slice(0, 10);
   }
-  function prevRangeFor(days) {
-    if (!days) return null;
-    var end = dayAdd(maxDate, -days);
-    return { start: dayAdd(end, -(days - 1)), end: end };
+  function addMonths(ds, n) {
+    var p = ds.split('-'); var dt = new Date(Date.UTC(+p[0], (+p[1] - 1) + n, 1));
+    return dt.toISOString().slice(0, 10);
+  }
+  function clampDate(ds) { return ds < minDate ? minDate : (ds > maxDate ? maxDate : ds); }
+
+  var PERIODS = [
+    { k: 'today', label: 'Hoje' },
+    { k: 'yesterday', label: 'Ontem' },
+    { k: '7d', label: 'Últimos 7 dias' },
+    { k: '14d', label: 'Últimos 14 dias' },
+    { k: '30d', label: 'Últimos 30 dias' },
+    { k: 'month', label: 'Este mês' },
+    { k: 'lastmonth', label: 'Mês passado' },
+    { k: 'all', label: 'Tudo' }
+  ];
+  var state = { period: 'all', tab: 'ad', customStart: null, customEnd: null };
+
+  function resolveRange() {
+    var y, fp;
+    switch (state.period) {
+      case 'custom': return { start: state.customStart, end: state.customEnd };
+      case 'today': return { start: maxDate, end: maxDate };
+      case 'yesterday': y = dayAdd(maxDate, -1); return { start: y, end: y };
+      case '7d': return { start: dayAdd(maxDate, -6), end: maxDate };
+      case '14d': return { start: dayAdd(maxDate, -13), end: maxDate };
+      case '30d': return { start: dayAdd(maxDate, -29), end: maxDate };
+      case 'month': return { start: firstOfMonth(maxDate), end: maxDate };
+      case 'lastmonth': fp = addMonths(firstOfMonth(maxDate), -1); return { start: fp, end: lastOfMonth(fp) };
+      default: return { start: minDate, end: maxDate };
+    }
+  }
+  function daysInRange(r) {
+    var a = new Date(r.start + 'T00:00:00Z'), b = new Date(r.end + 'T00:00:00Z');
+    return Math.round((b - a) / 86400000) + 1;
+  }
+  function prevOf(r) {
+    if (state.period === 'all') return null;
+    var len = daysInRange(r);
+    var end = dayAdd(r.start, -1);
+    return { start: dayAdd(end, -(len - 1)), end: end };
   }
   function within(d, r) { return d >= r.start && d <= r.end; }
 
@@ -59,16 +90,17 @@
 
   // ---------- render ----------
   function render() {
-    var pd = PERIODS.filter(function (p) { return p.k === state.period; })[0];
-    var r = rangeFor(pd.days);
-    var pr = prevRangeFor(pd.days);
+    var r = resolveRange();
+    var pr = prevOf(r);
     var cur = aggDaily(r);
     var prev = pr ? aggDaily(pr) : null;
     cur.spendVenda = spendByFunnel(r).Venda;
     if (prev) prev.spendVenda = spendByFunnel(pr).Venda;
 
     renderPeriods();
-    el('range').textContent = 'Período: ' + brDateFull(r.start) + ' → ' + brDateFull(r.end) + (pr ? '  ·  comparado com ' + brDateFull(pr.start) + ' → ' + brDateFull(pr.end) : '');
+    syncDateInputs(r);
+    var nd = daysInRange(r);
+    el('range').textContent = brDateFull(r.start) + ' → ' + brDateFull(r.end) + ' (' + nd + (nd === 1 ? ' dia' : ' dias') + ')' + (pr ? '  ·  vs ' + brDateFull(pr.start) + ' → ' + brDateFull(pr.end) : '');
     renderRevBlock(cur);
     renderFunilInv(r);
     renderKpis(cur, prev);
@@ -87,6 +119,26 @@
     Array.prototype.forEach.call(el('periods').children, function (b) {
       b.onclick = function () { state.period = b.getAttribute('data-k'); render(); };
     });
+  }
+
+  function syncDateInputs(r) {
+    var s = el('dtStart'), e = el('dtEnd');
+    if (!s || !e) return;
+    s.value = r.start; e.value = r.end;
+  }
+  function initDateInputs() {
+    var s = el('dtStart'), e = el('dtEnd'), b = el('applyRange');
+    if (!s || !e || !b) return;
+    s.min = e.min = minDate; s.max = e.max = maxDate;
+    b.onclick = function () {
+      var a = s.value, c = e.value;
+      if (!a || !c) return;
+      if (a > c) { var t = a; a = c; c = t; }
+      state.period = 'custom';
+      state.customStart = clampDate(a);
+      state.customEnd = clampDate(c);
+      render();
+    };
   }
 
   function deltaHtml(curV, prevV, goodUp) {
@@ -361,6 +413,7 @@
   if (!daily.length) {
     el('kpis').innerHTML = '<div class="empty">Sem dados. Rode o build.</div>';
   } else {
+    initDateInputs();
     render();
   }
 })();
