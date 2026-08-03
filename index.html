@@ -1,65 +1,65 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>Michelle Ziade — Imersão · Dashboard</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=1">
+<link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
 <div class="wrap">
-  <div class="top">
+
+  <header class="top">
     <div>
-      <h1>Imersão — Lançamento · Michelle Ziade</h1>
-      <div class="sub"><b>Funil de venda direta</b> · faturamento real (Hotmart)</div>
-      <div class="taxnote" id="taxNote"></div>
+      <h1 id="title">Imersão — Lançamento · Michelle Ziade</h1>
+      <p class="sub" id="subtitle"><b>Funil de venda direta</b> · faturamento real (Hotmart) · carregando…</p>
     </div>
-    <div class="upd" id="upd"><span class="dot"></span>carregando…</div>
+    <div class="top-right">
+      <span class="badge tax" id="taxBadge" title="Imposto do Meta Ads aplicado sobre o gasto bruto">imposto —</span>
+      <span class="badge"><span class="dot"></span><span id="updated">—</span></span>
+      <button class="btn" id="theme" title="Alternar tema claro/escuro">Claro</button>
+    </div>
+  </header>
+
+  <div class="viewtabs" role="tablist" aria-label="Visão">
+    <button data-tab="overview" role="tab">📊 Visão Geral</button>
+    <button data-tab="traffic" role="tab">🎯 Tráfego Pago</button>
+    <button data-tab="report" role="tab">📄 Relatório</button>
   </div>
 
-  <div class="periods" id="periods"></div>
-  <div class="daterow">
-    <span class="dlbl">De</span>
-    <input type="date" id="dtStart" class="dinput">
-    <span class="dlbl">até</span>
-    <input type="date" id="dtEnd" class="dinput">
-    <button id="applyRange" class="dapply">Aplicar</button>
-    <span class="range" id="range"></span>
-  </div>
-
-  <div class="card revblock" id="revblock"></div>
-
-  <div class="sec">
-    <h2>Investimento por funil <span>— com imposto ×1,1385</span></h2>
-    <div class="grid funil-grid" id="funilInv"></div>
-  </div>
-
-  <div class="grid kpis" id="kpis"></div>
-
-  <div class="sec">
-    <h2>Funil <span>— do investimento à venda</span></h2>
-    <div class="card funnel" id="funnel"></div>
-  </div>
-
-  <div class="sec">
-    <h2>Evolução diária <span>— investimento × vendas</span></h2>
-    <div class="card chartcard">
-      <div class="legend" id="legend"></div>
-      <svg class="chart" id="chart" preserveAspectRatio="none"></svg>
+  <div class="controls">
+    <div class="grp">
+      <label>Período</label>
+      <button class="btn" data-preset="today">Hoje</button>
+      <button class="btn" data-preset="yesterday">Ontem</button>
+      <button class="btn" data-preset="7">7 dias</button>
+      <button class="btn" data-preset="14">14 dias</button>
+      <button class="btn" data-preset="30">30 dias</button>
+      <button class="btn" data-preset="month">Este mês</button>
+      <button class="btn" data-preset="all">Tudo</button>
+    </div>
+    <div class="grp">
+      <input type="date" id="from">
+      <span style="color:var(--ink-3)">até</span>
+      <input type="date" id="to">
+    </div>
+    <div class="spacer"></div>
+    <div class="grp">
+      <button class="btn on" id="cmp" aria-pressed="true">Comparar c/ período anterior</button>
+      <span class="rangelbl" id="cmpNote"></span>
     </div>
   </div>
 
-  <div class="sec">
-    <h2>Otimização <span>— onde o custo por resultado é mais barato</span></h2>
-    <div class="tabs" id="tabs"></div>
-    <div class="card tablecard"><div id="table"></div></div>
-  </div>
+  <div id="overviewView"></div>
+  <div id="trafficView" hidden></div>
+  <div id="reportView" hidden></div>
 
-  <div class="foothint" id="hint"></div>
+  <footer id="footer"></footer>
 </div>
-<script>var _t=Date.now();document.write('<scr'+'ipt src="data.js?t='+_t+'"><\/scr'+'ipt>');document.write('<scr'+'ipt src="app.js?t='+_t+'"><\/scr'+'ipt>');</script>
+
+<div id="tip" role="tooltip"></div>
+
+<script>var _t=Date.now();document.write('<scr'+'ipt src="data.js?t='+_t+'"><\/scr'+'ipt>');document.write('<scr'+'ipt src="app.js?v=2&t='+_t+'"><\/scr'+'ipt>');</script>
 </body>
 </html>

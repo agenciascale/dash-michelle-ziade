@@ -1,419 +1,778 @@
+/* =========================================================================
+   Dashboard Michelle Ziade — Imersão (venda direta)
+   3 abas: Visão Geral · Tráfego Pago · Relatório.
+   Dados: window.DASH (data.js) — daily[] (funil/dia) + grain[] (dia × anúncio).
+   Faturamento/vendas = Hotmart (fonte da verdade). Atribuição por anúncio = PIXEL
+   (Adveronix, coluna Purchases). ROAS/CAC usam SÓ o investimento da campanha de
+   Venda (Topo = conteúdo/aquecimento, não entra no retorno). Imposto ×1,1385.
+   ========================================================================= */
 (function () {
   "use strict";
   var D = window.DASH || {};
   var arr = function (x) { return Array.isArray(x) ? x : (x ? [x] : []); };
   var daily = arr(D.daily).slice().sort(function (a, b) { return a.d < b.d ? -1 : a.d > b.d ? 1 : 0; });
   var grain = arr(D.grain);
+  var TAX = D.tax || 1.1385;
 
-  // ---------- helpers ----------
+  /* ---------------------------------------------------------------- formato */
   var nf0 = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 });
+  var nf1 = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   var nf2 = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  function money(v) { return 'R$ ' + nf2.format(v || 0); }
-  function money0(v) { return 'R$ ' + nf0.format(Math.round(v || 0)); }
+  var nf4 = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 4 });
+  function ok(v) { return v !== null && v !== undefined && isFinite(v); }
+  function money(v) { return (v < 0 ? '−R$ ' : 'R$ ') + nf2.format(Math.abs(v || 0)); }
+  function money0(v) { return (v < 0 ? '−R$ ' : 'R$ ') + nf0.format(Math.round(Math.abs(v || 0))); }
   function int(v) { return nf0.format(Math.round(v || 0)); }
-  function pct(v) { return (new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 1 }).format((v || 0) * 100)) + '%'; }
-  function num2(v) { return nf2.format(v || 0); }
-  function div(a, b) { return b ? a / b : 0; }
+  function pct1(v) { return nf1.format((v || 0) * 100) + '%'; }
+  function x2(v) { return nf2.format(v || 0) + 'x'; }
+  function taxStr(v) { return nf4.format(v || 1); }
+  // versões que exibem "—" quando a métrica não é calculável (divisão por zero)
+  var M = {
+    money: function (v) { return ok(v) ? money(v) : '—'; },
+    money0: function (v) { return ok(v) ? money0(v) : '—'; },
+    int: function (v) { return ok(v) ? int(v) : '—'; },
+    pct1: function (v) { return ok(v) ? pct1(v) : '—'; },
+    x: function (v) { return ok(v) ? x2(v) : '—'; }
+  };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
-  function el(id) { return document.getElementById(id); }
+  function $(id) { return document.getElementById(id); }
+  function div(a, b) { return b > 0 ? a / b : null; }
 
-  function dayAdd(ds, n) {
-    var p = ds.split('-'); var dt = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2]));
-    dt.setUTCDate(dt.getUTCDate() + n);
-    return dt.toISOString().slice(0, 10);
-  }
+  function dayAdd(ds, n) { var p = ds.split('-'); var dt = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2])); dt.setUTCDate(dt.getUTCDate() + n); return dt.toISOString().slice(0, 10); }
   function brDate(ds) { var p = ds.split('-'); return p[2] + '/' + p[1]; }
+  function brFull(ds) { var p = ds.split('-'); return p[2] + '/' + p[1] + '/' + p[0]; }
+  function diffDays(a, b) { return Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 864e5); }
 
-  // ---------- period ----------
+  /* ---------------------------------------------------------------- período */
   var minDate = daily.length ? daily[0].d : '2026-01-01';
   var maxDate = daily.length ? daily[daily.length - 1].d : '2026-01-01';
-
   function firstOfMonth(ds) { return ds.slice(0, 7) + '-01'; }
-  function lastOfMonth(ds) {
-    var p = ds.split('-'); var dt = new Date(Date.UTC(+p[0], +p[1], 0));
-    return dt.toISOString().slice(0, 10);
-  }
-  function addMonths(ds, n) {
-    var p = ds.split('-'); var dt = new Date(Date.UTC(+p[0], (+p[1] - 1) + n, 1));
-    return dt.toISOString().slice(0, 10);
-  }
-  function clampDate(ds) { return ds < minDate ? minDate : (ds > maxDate ? maxDate : ds); }
+  function clampD(ds) { return ds < minDate ? minDate : (ds > maxDate ? maxDate : ds); }
 
-  var PERIODS = [
-    { k: 'today', label: 'Hoje' },
-    { k: 'yesterday', label: 'Ontem' },
-    { k: '7d', label: 'Últimos 7 dias' },
-    { k: '14d', label: 'Últimos 14 dias' },
-    { k: '30d', label: 'Últimos 30 dias' },
-    { k: 'month', label: 'Este mês' },
-    { k: 'lastmonth', label: 'Mês passado' },
-    { k: 'all', label: 'Tudo' }
-  ];
-  var state = { period: 'all', tab: 'ad', customStart: null, customEnd: null };
+  var STATE = {
+    from: minDate, to: maxDate, preset: 'all', compare: true, tab: 'overview',
+    metric: 'spend', treeSort: { key: 'spend', dir: -1 }, expanded: {}
+  };
 
-  function resolveRange() {
-    var y, fp;
-    switch (state.period) {
-      case 'custom': return { start: state.customStart, end: state.customEnd };
-      case 'today': return { start: maxDate, end: maxDate };
-      case 'yesterday': y = dayAdd(maxDate, -1); return { start: y, end: y };
-      case '7d': return { start: dayAdd(maxDate, -6), end: maxDate };
-      case '14d': return { start: dayAdd(maxDate, -13), end: maxDate };
-      case '30d': return { start: dayAdd(maxDate, -29), end: maxDate };
-      case 'month': return { start: firstOfMonth(maxDate), end: maxDate };
-      case 'lastmonth': fp = addMonths(firstOfMonth(maxDate), -1); return { start: fp, end: lastOfMonth(fp) };
-      default: return { start: minDate, end: maxDate };
-    }
-  }
-  function daysInRange(r) {
-    var a = new Date(r.start + 'T00:00:00Z'), b = new Date(r.end + 'T00:00:00Z');
-    return Math.round((b - a) / 86400000) + 1;
-  }
-  function prevOf(r) {
-    if (state.period === 'all') return null;
-    var len = daysInRange(r);
-    var end = dayAdd(r.start, -1);
-    return { start: dayAdd(end, -(len - 1)), end: end };
-  }
-  function within(d, r) { return d >= r.start && d <= r.end; }
-
-  function aggDaily(r) {
-    var o = { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, vendas: 0, fat: 0, checkouts: 0 };
-    for (var i = 0; i < daily.length; i++) {
-      var x = daily[i]; if (!within(x.d, r)) continue;
-      o.spend += x.spend; o.impr += x.impr; o.clk += x.clk; o.lpv += x.lpv;
-      o.purPixel += x.purPixel; o.valPixel += x.valPixel;
-      o.vendas += x.vendas; o.fat += x.fat; o.checkouts += x.checkouts;
-    }
-    return o;
-  }
-
-  // ---------- render ----------
-  function render() {
-    var r = resolveRange();
-    var pr = prevOf(r);
-    var cur = aggDaily(r);
-    var prev = pr ? aggDaily(pr) : null;
-    cur.spendVenda = spendByFunnel(r).Venda;
-    if (prev) prev.spendVenda = spendByFunnel(pr).Venda;
-
-    renderPeriods();
-    syncDateInputs(r);
-    var nd = daysInRange(r);
-    el('range').textContent = brDateFull(r.start) + ' → ' + brDateFull(r.end) + ' (' + nd + (nd === 1 ? ' dia' : ' dias') + ')' + (pr ? '  ·  vs ' + brDateFull(pr.start) + ' → ' + brDateFull(pr.end) : '');
-    renderRevBlock(cur);
-    renderFunilInv(r);
-    renderKpis(cur, prev);
-    renderFunnel(cur);
-    renderChart(r);
-    renderTable(r);
-    renderHint();
-  }
-
-  function brDateFull(ds) { var p = ds.split('-'); return p[2] + '/' + p[1] + '/' + p[0]; }
-
-  function renderPeriods() {
-    el('periods').innerHTML = PERIODS.map(function (p) {
-      return '<button data-k="' + p.k + '" class="' + (p.k === state.period ? 'on' : '') + '">' + p.label + '</button>';
-    }).join('');
-    Array.prototype.forEach.call(el('periods').children, function (b) {
-      b.onclick = function () { state.period = b.getAttribute('data-k'); render(); };
-    });
-  }
-
-  function syncDateInputs(r) {
-    var s = el('dtStart'), e = el('dtEnd');
-    if (!s || !e) return;
-    s.value = r.start; e.value = r.end;
-  }
-  function initDateInputs() {
-    var s = el('dtStart'), e = el('dtEnd'), b = el('applyRange');
-    if (!s || !e || !b) return;
-    s.min = e.min = minDate; s.max = e.max = maxDate;
-    b.onclick = function () {
-      var a = s.value, c = e.value;
-      if (!a || !c) return;
-      if (a > c) { var t = a; a = c; c = t; }
-      state.period = 'custom';
-      state.customStart = clampDate(a);
-      state.customEnd = clampDate(c);
-      render();
-    };
-  }
-
-  function deltaHtml(curV, prevV, goodUp) {
-    if (prevV == null) return '';
-    if (!prevV && !curV) return '<span class="delta flat">—</span>';
-    if (!prevV) return '<span class="delta ' + (goodUp ? 'up' : 'down') + '">novo</span>';
-    var ch = (curV - prevV) / prevV;
-    var cls = ch === 0 ? 'flat' : ((ch > 0) === goodUp ? 'up' : 'down');
-    var ar = ch > 0 ? '▲' : (ch < 0 ? '▼' : '•');
-    return '<span class="delta ' + cls + '">' + ar + ' ' + pct(Math.abs(ch)) + '</span>';
-  }
-
-  function kpiCard(lbl, val, sm, delta, foot, cls) {
-    return '<div class="card kpi ' + (cls || '') + '">' +
-      '<div class="lbl">' + lbl + '</div>' +
-      '<div class="val ' + (sm ? 'sm' : '') + '">' + val + '</div>' +
-      (delta || '') + (foot ? '<div class="foot">' + foot + '</div>' : '') + '</div>';
-  }
-
-  function renderKpis(c, p) {
-    var sv = c.spendVenda || 0;
-    var svP = p ? (p.spendVenda || 0) : null;
-    var roas = div(c.fat, sv);
-    var roasP = p ? div(p.fat, svP) : null;
-    var ticket = div(c.fat, c.vendas);
-    var cac = div(sv, c.vendas);
-    var ic = c.vendas + c.checkouts;
-    var icP = p ? (p.vendas + p.checkouts) : null;
-    var cards = [
-      kpiCard('Investimento total', money0(c.spend), false, deltaHtml(c.spend, p && p.spend, false), 'Topo + Venda · imposto ×1,1385', 'accent-l'),
-      kpiCard('Faturamento (Hotmart)', money0(c.fat), false, deltaHtml(c.fat, p && p.fat, true), int(c.vendas) + ' venda(s) aprovada(s)'),
-      kpiCard('ROAS real', num2(roas) + 'x', false, deltaHtml(roas, roasP, true), 'faturamento ÷ invest. em venda'),
-      kpiCard('Ticket médio', c.vendas ? money(ticket) : '—', true, '', 'por venda Hotmart'),
-      kpiCard('CAC (custo/venda)', c.vendas ? money(cac) : '—', true, deltaHtml(c.vendas ? cac : 0, p && p.vendas ? div(svP, p.vendas) : null, false), 'invest. venda ÷ vendas'),
-      kpiCard('Iniciar checkout (IC)', int(ic), false, deltaHtml(ic, icP, true), 'Hotmart: chegaram ao checkout'),
-      kpiCard('Taxa de checkout', c.lpv ? pct(div(ic, c.lpv)) : '—', true, '', 'IC ÷ landing page views'),
-      kpiCard('Conversão de checkout', ic ? pct(div(c.vendas, ic)) : '—', true, '', 'vendas ÷ IC')
-    ];
-    el('kpis').innerHTML = cards.join('');
-  }
-
-  function taxMult() { return (D.tax || 1.1385).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 }); }
-
+  /* ---------------------------------------------------------------- funil de campanha */
   function funnelOf(camp) {
     var c = String(camp || '').toUpperCase();
     if (c.indexOf('TOPO') >= 0) return 'Topo';
     if (/\bVND\b|E4-VEN|IHF|VENDA/.test(c)) return 'Venda';
     return 'Outros';
   }
-  function spendByFunnel(r) {
+  function within(d, from, to) { return d >= from && d <= to; }
+
+  /* ---------------------------------------------------------------- agregação (daily) */
+  function blank() { return { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, vendas: 0, fat: 0, checkouts: 0 }; }
+  function spendByFunnel(from, to) {
     var o = { Topo: 0, Venda: 0, Outros: 0, total: 0 };
-    for (var i = 0; i < grain.length; i++) {
-      var x = grain[i]; if (!within(x.d, r)) continue;
-      o[funnelOf(x.camp)] += x.spend; o.total += x.spend;
-    }
+    for (var i = 0; i < grain.length; i++) { var g = grain[i]; if (!within(g.d, from, to)) continue; o[funnelOf(g.camp)] += g.spend; o.total += g.spend; }
     return o;
   }
-  var FUNIL_META = {
-    'Topo': { color: 'var(--cyan)', desc: 'topo de funil (alcance / visita ao perfil)' },
-    'Venda': { color: 'var(--brand)', desc: 'conversão / venda direta' },
-    'Outros': { color: 'var(--tx3)', desc: 'demais campanhas' }
+  // derive: adiciona métricas calculadas a um agregado diário
+  function derive(t) {
+    var ic = (t.vendas || 0) + (t.checkouts || 0);
+    var o = Object.assign({}, t);
+    o.ic = ic;
+    o.cpm = div(t.spend * 1000, t.impr);
+    o.ctr = div(t.clk, t.impr);
+    o.cpc = div(t.spend, t.clk);
+    o.cpl = div(t.spend, t.lpv);          // custo por landing page view
+    o.cpic = div(t.spend, ic);            // custo por checkout iniciado
+    o.connect = div(t.lpv, t.clk);        // connect rate (LPV ÷ cliques)
+    o.cac = div(t.spendVenda, t.vendas);  // custo por venda (só invest. de venda)
+    o.roas = div(t.fat, t.spendVenda);    // retorno sobre invest. de venda
+    o.ticket = div(t.fat, t.vendas);
+    o.convCheck = div(t.vendas, ic);      // conversão checkout → venda
+    o.lpCheck = div(ic, t.lpv);           // LP → checkout
+    o.resultado = (t.fat || 0) - (t.spend || 0); // caixa real (fat − invest. total)
+    return o;
+  }
+  function aggregate(from, to) {
+    var t = blank();
+    for (var i = 0; i < daily.length; i++) {
+      var x = daily[i]; if (!within(x.d, from, to)) continue;
+      t.spend += x.spend; t.impr += x.impr; t.clk += x.clk; t.lpv += x.lpv;
+      t.purPixel += x.purPixel; t.valPixel += x.valPixel;
+      t.vendas += x.vendas; t.fat += x.fat; t.checkouts += x.checkouts;
+    }
+    var sb = spendByFunnel(from, to);
+    t.spendVenda = sb.Venda; t.spendTopo = sb.Topo; t.spendOutros = sb.Outros;
+    return derive(t);
+  }
+  function dailyRows(from, to) {
+    var out = [];
+    for (var i = 0; i < daily.length; i++) {
+      var x = daily[i]; if (!within(x.d, from, to)) continue;
+      var t = Object.assign(blank(), x);
+      // gasto de venda por dia (via grain) — pra CAC/ROAS diário
+      var sv = 0; for (var j = 0; j < grain.length; j++) { var g = grain[j]; if (g.d === x.d && funnelOf(g.camp) === 'Venda') sv += g.spend; }
+      t.spendVenda = sv;
+      out.push(derive(t));
+    }
+    return out;
+  }
+
+  /* ---------------------------------------------------------------- régua de benchmarks (Leandro)
+     Classifica cada métrica em bom / médio / ruim. dir 'high' = maior é melhor. */
+  var BANDS = {
+    ctr: { label: 'CTR', good: 0.025, mid: 0.01, dir: 'high', fmt: M.pct1 },
+    cpc: { label: 'CPC', good: 2, mid: 4, dir: 'low', fmt: M.money },
+    cpm: { label: 'CPM', good: 35, mid: 60, dir: 'low', fmt: M.money },
+    connect: { label: 'Connect rate', good: 0.90, mid: 0.70, dir: 'high', fmt: M.pct1 },
+    cpic: { label: 'Custo/checkout', good: 20, mid: 40, dir: 'low', fmt: M.money },
+    convCheck: { label: 'Conv. checkout', good: 0.40, mid: 0.20, dir: 'high', fmt: M.pct1 }
   };
+  function statusOf(v, b) {
+    if (!ok(v)) return null;
+    var lvl;
+    if (b.dir === 'high') lvl = v >= b.good ? 'good' : v >= b.mid ? 'warn' : 'bad';
+    else lvl = v <= b.good ? 'good' : v <= b.mid ? 'warn' : 'bad';
+    var word = lvl === 'good' ? 'bom' : lvl === 'warn' ? 'médio' : 'ruim';
+    var cls = lvl === 'good' ? 'g' : lvl === 'warn' ? 'y' : 'r';
+    return { lvl: lvl, word: word, cls: cls };
+  }
+  function scoreOf(v, b) {
+    if (!ok(v)) return null;
+    if (b.dir === 'high') {
+      if (v >= b.good) return 100;
+      if (v >= b.mid) return 60 + (v - b.mid) / (b.good - b.mid) * 30;   // 60→90
+      return Math.max(5, v / b.mid * 55);                               // 5→55
+    } else {
+      if (v <= b.good) return 100;
+      if (v <= b.mid) return 60 + (b.mid - v) / (b.mid - b.good) * 30;
+      return Math.max(5, 55 - (v - b.mid) / b.mid * 55);
+    }
+  }
+  var scoreColor = function (s) { return s == null ? 'var(--ink-3)' : s >= 75 ? 'var(--good)' : s >= 50 ? 'var(--warning)' : 'var(--critical)'; };
+  var bandLabel = function (s) { return s == null ? 'sem dados' : s >= 80 ? 'Saudável' : s >= 60 ? 'Bom' : s >= 40 ? 'Atenção' : 'Crítico'; };
 
-  function renderRevBlock(c) {
-    var sv = c.spendVenda || 0;
-    var roas = div(c.fat, sv);
-    var preTax = sv / (D.tax || 1.1385);
-    el('revblock').innerHTML =
-      '<div class="rev-card rev-inv"><div class="rev-top">💸 Investimento <span class="sub">em venda</span></div>' +
-        '<div class="rev-val" style="color:var(--brand)">' + money0(sv) + '</div>' +
-        '<div class="rev-sub">só campanha de venda · sem imposto ' + money0(preTax) + '</div></div>' +
-      '<div class="rev-conn">→</div>' +
-      '<div class="rev-card rev-rec"><div class="rev-top">💰 Faturamento <span class="sub">Hotmart</span></div>' +
-        '<div class="rev-val" style="color:var(--green)">' + money0(c.fat) + '</div>' +
-        '<div class="rev-sub">' + int(c.vendas) + ' venda(s) aprovada(s)</div></div>' +
-      '<div class="rev-conn">=</div>' +
-      '<div class="rev-card rev-roas"><div class="rev-top">📈 ROAS <span class="sub">real</span></div>' +
-        '<div class="rev-val" style="color:var(--violet)">' + num2(roas) + 'x</div>' +
-        '<div class="rev-sub">faturamento ÷ investimento</div></div>';
+  // métricas que compõem a nota de saúde (topo confiável + fundo)
+  var HEALTH_KEYS = ['ctr', 'cpc', 'cpm', 'cpic', 'convCheck'];
+  function health(a) {
+    var bars = HEALTH_KEYS.map(function (k) {
+      var b = BANDS[k], v = a[k], sc = scoreOf(v, b);
+      return { label: b.label, valueStr: b.fmt(v), score: sc, band: b, cls: (statusOf(v, b) || {}).cls };
+    });
+    var valid = bars.filter(function (b) { return b.score != null; });
+    var score = valid.length ? Math.round(valid.reduce(function (s, b) { return s + b.score; }, 0) / valid.length) : null;
+    return { score: score, band: bandLabel(score), bars: bars };
   }
 
-  function renderFunilInv(r) {
+  /* ---------------------------------------------------------------- SVG helpers */
+  var NS = 'http://www.w3.org/2000/svg';
+  function svgEl(n, at) { var e = document.createElementNS(NS, n); for (var k in at) e.setAttribute(k, at[k]); return e; }
+  function niceMax(v) { if (!(v > 0)) return 1; var e = Math.pow(10, Math.floor(Math.log10(v))); var f = v / e; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * e; }
+  function ticks(max, n) { n = n || 4; var out = []; for (var i = 0; i <= n; i++) out.push(max * i / n); return out; }
+  function labelStep(count, width) { return Math.max(1, Math.ceil(count / Math.max(2, Math.floor(width / 58)))); }
+
+  var TIP = null;
+  function showTip(html, ev) {
+    TIP.innerHTML = html; TIP.style.opacity = 1;
+    var r = TIP.getBoundingClientRect();
+    var x = ev.clientX + 14, y = ev.clientY - r.height - 12;
+    if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - 14;
+    if (y < 8) y = ev.clientY + 18;
+    TIP.style.left = x + 'px'; TIP.style.top = y + 'px';
+  }
+  function hideTip() { TIP.style.opacity = 0; }
+
+  // gráfico combinado barra(s) + linha com eixo duplo
+  function comboChart(host, rows, cfg) {
+    host.innerHTML = '';
+    var W = Math.max(300, host.clientWidth || 520), H = 240;
+    var P = { t: 22, r: 50, b: 28, l: 56 }, iw = W - P.l - P.r, ih = H - P.t - P.b, n = rows.length;
+    var svg = svgEl('svg', { class: 'chart', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H, role: 'img' });
+    var leftMax = niceMax(Math.max.apply(null, rows.flatMap(function (r) { return cfg.bars.map(function (b) { return r[b.key] || 0; }); }).concat([0])));
+    var rightVals = rows.map(function (r) { return r[cfg.line.key]; }).filter(ok);
+    var rightMax = niceMax(Math.max.apply(null, rightVals.concat([0])));
+    var yL = function (v) { return P.t + ih - (leftMax > 0 ? (v / leftMax) * ih : 0); };
+    var yR = function (v) { return P.t + ih - (rightMax > 0 ? (v / rightMax) * ih : 0); };
+    ticks(leftMax).forEach(function (t) { svg.appendChild(svgEl('line', { class: 'gl', x1: P.l, x2: P.l + iw, y1: yL(t), y2: yL(t) })); var tx = svgEl('text', { x: P.l - 7, y: yL(t) + 4, 'text-anchor': 'end' }); tx.textContent = cfg.leftFmt(t); svg.appendChild(tx); });
+    ticks(rightMax).forEach(function (t) { var tx = svgEl('text', { x: P.l + iw + 7, y: yR(t) + 4, 'text-anchor': 'start' }); tx.textContent = cfg.rightFmt(t); svg.appendChild(tx); });
+    svg.appendChild(svgEl('line', { class: 'ax', x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih }));
+    var slot = iw / Math.max(1, n), nb = cfg.bars.length;
+    var groupW = Math.min(slot - 3, nb > 1 ? 40 : 30), bw = Math.max(2, groupW / nb - 1), step = labelStep(n, iw);
+    rows.forEach(function (r, i) {
+      var cx = P.l + slot * i + slot / 2;
+      cfg.bars.forEach(function (b, bi) {
+        var v = r[b.key] || 0, h = Math.max(v > 0 ? 1.5 : 0, P.t + ih - yL(v));
+        var x = cx - groupW / 2 + bi * (groupW / nb) + (groupW / nb - bw) / 2;
+        if (h > 0) svg.appendChild(svgEl('rect', { x: x, y: P.t + ih - h, width: bw, height: h, fill: b.color, rx: Math.min(3, bw / 2) }));
+      });
+      if (i % step === 0 || i === n - 1) { var tx = svgEl('text', { x: cx, y: H - 8, 'text-anchor': 'middle' }); tx.textContent = brDate(r.d); svg.appendChild(tx); }
+    });
+    var pts = rows.map(function (r, i) { var v = r[cfg.line.key]; return ok(v) ? [P.l + slot * i + slot / 2, yR(v), v] : null; });
+    var seg = [], segs = [];
+    pts.forEach(function (p) { if (p) seg.push(p); else if (seg.length) { segs.push(seg); seg = []; } }); if (seg.length) segs.push(seg);
+    segs.forEach(function (s) { var d = s.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' '); svg.appendChild(svgEl('path', { d: d, fill: 'none', stroke: cfg.line.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' })); });
+    if (n <= 45) pts.forEach(function (p) { if (p) svg.appendChild(svgEl('circle', { cx: p[0], cy: p[1], r: 3.2, fill: cfg.line.color, stroke: 'var(--card)', 'stroke-width': 1.5 })); });
+    var cross = svgEl('line', { class: 'cross', y1: P.t, y2: P.t + ih }); svg.appendChild(cross);
+    var hit = svgEl('rect', { class: 'hit', x: P.l, y: P.t, width: iw, height: ih });
+    hit.addEventListener('mousemove', function (ev) {
+      var box = svg.getBoundingClientRect();
+      var i = Math.max(0, Math.min(n - 1, Math.floor((((ev.clientX - box.left) / box.width) * W - P.l) / slot)));
+      var r = rows[i], cx = P.l + slot * i + slot / 2;
+      cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.style.opacity = 1;
+      var html = '<b>' + brFull(r.d) + '</b>';
+      cfg.bars.forEach(function (b) { html += '<div class="r"><em><i style="background:' + b.color + '"></i>' + b.name + '</em><strong>' + cfg.leftFmt(r[b.key] || 0) + '</strong></div>'; });
+      html += '<div class="r"><em><i style="background:' + cfg.line.color + '"></i>' + cfg.line.name + '</em><strong>' + cfg.lineFmt(r[cfg.line.key]) + '</strong></div>';
+      showTip(html, ev);
+    });
+    hit.addEventListener('mouseleave', function () { cross.style.opacity = 0; hideTip(); });
+    svg.appendChild(hit);
+    host.appendChild(svg);
+  }
+
+  // gráfico de linhas (1 ou 2 séries: atual/anterior)
+  function lineChart(host, labels, series, fmt) {
+    host.innerHTML = '';
+    var W = Math.max(320, host.clientWidth || 900), H = 240;
+    var P = { t: 16, r: 14, b: 28, l: 64 }, iw = W - P.l - P.r, ih = H - P.t - P.b;
+    var svg = svgEl('svg', { class: 'chart', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: H, role: 'img' });
+    var all = series.flatMap(function (s) { return s.values.filter(ok); });
+    var max = niceMax(Math.max.apply(null, all.concat([0])));
+    var n = labels.length;
+    var x = function (i) { return n === 1 ? P.l + iw / 2 : P.l + (iw * i) / (n - 1); };
+    var y = function (v) { return P.t + ih - (max > 0 ? (v / max) * ih : 0); };
+    ticks(max).forEach(function (t) { svg.appendChild(svgEl('line', { class: 'gl', x1: P.l, x2: P.l + iw, y1: y(t), y2: y(t) })); var tx = svgEl('text', { x: P.l - 8, y: y(t) + 4, 'text-anchor': 'end' }); tx.textContent = fmt(t); svg.appendChild(tx); });
+    svg.appendChild(svgEl('line', { class: 'ax', x1: P.l, x2: P.l + iw, y1: P.t + ih, y2: P.t + ih }));
+    var step = labelStep(n, iw);
+    labels.forEach(function (lb, i) { if (i % step === 0 || i === n - 1) { var tx = svgEl('text', { x: x(i), y: H - 8, 'text-anchor': 'middle' }); tx.textContent = lb; svg.appendChild(tx); } });
+    series.forEach(function (s) {
+      var pts = s.values.map(function (v, i) { return [x(i), y(v || 0)]; });
+      var d = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
+      var path = svgEl('path', { d: d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+      if (s.dashed) path.setAttribute('stroke-dasharray', '5 4');
+      svg.appendChild(path);
+      if (n <= 40) pts.forEach(function (p) { svg.appendChild(svgEl('circle', { cx: p[0], cy: p[1], r: 4, fill: s.color, stroke: 'var(--card)', 'stroke-width': 2 })); });
+    });
+    var cross = svgEl('line', { class: 'cross', y1: P.t, y2: P.t + ih }); svg.appendChild(cross);
+    var hit = svgEl('rect', { class: 'hit', x: P.l - 4, y: P.t, width: iw + 8, height: ih });
+    hit.addEventListener('mousemove', function (ev) {
+      var box = svg.getBoundingClientRect();
+      var rel = ((ev.clientX - box.left) / box.width) * W;
+      var i = Math.max(0, Math.min(n - 1, Math.round(n === 1 ? 0 : ((rel - P.l) / iw) * (n - 1))));
+      cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.style.opacity = 1;
+      showTip('<b>' + (series[0].fullLabels ? series[0].fullLabels[i] : labels[i]) + '</b>' +
+        series.map(function (s) { return '<div class="r"><em><i style="background:' + s.color + '"></i>' + s.name + '</em><strong>' + fmt(s.values[i]) + '</strong></div>'; }).join(''), ev);
+    });
+    hit.addEventListener('mouseleave', function () { cross.style.opacity = 0; hideTip(); });
+    svg.appendChild(hit);
+    host.appendChild(svg);
+  }
+
+  function gauge(score, colorVar) {
+    var s = ok(score) ? score : 0, r = 54, c = 2 * Math.PI * r, off = c * (1 - s / 100);
+    var disp = ok(score) ? Math.round(score) : '—';
+    return '<div class="gauge"><svg viewBox="0 0 132 132" width="132" height="132">' +
+      '<circle cx="66" cy="66" r="' + r + '" fill="none" stroke="var(--plane)" stroke-width="12"/>' +
+      '<circle cx="66" cy="66" r="' + r + '" fill="none" stroke="' + colorVar + '" stroke-width="12" stroke-linecap="round" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>' +
+      '</svg><div class="gv"><b>' + disp + '</b><span>de 100</span></div></div>';
+  }
+
+  /* ---------------------------------------------------------------- deltas */
+  function miniDelta(cur, prev, better) {
+    if (!STATE.compare || !ok(prev) || prev === 0 || !ok(cur)) return '<span class="flat">—</span>';
+    var ch = (cur - prev) / Math.abs(prev);
+    var ar = Math.abs(ch) < 0.0005 ? '→' : (ch > 0 ? '▲' : '▼');
+    var cls;
+    if (better === null) cls = 'flat';
+    else { var bad = better === false; cls = Math.abs(ch) < 0.0005 ? 'flat' : ((ch > 0) !== bad ? 'up' : 'down'); }
+    return '<span class="' + cls + '">' + ar + ' ' + nf1.format(Math.abs(ch) * 100) + '%</span>';
+  }
+
+  /* ---------------------------------------------------------------- árvore campanha › conjunto › anúncio (pixel) */
+  function tblank(label) { return { label: label, spend: 0, impr: 0, reach: 0, clk: 0, lpv: 0, pur: 0, val: 0, kids: {} }; }
+  function tderive(t) {
+    var o = Object.assign({}, t);
+    o.cpm = div(t.spend * 1000, t.impr); o.ctr = div(t.clk, t.impr); o.cpc = div(t.spend, t.clk);
+    o.cpl = div(t.spend, t.lpv); o.connect = div(t.lpv, t.clk);
+    o.custoCompra = div(t.spend, t.pur); o.roas = div(t.val, t.spend);
+    return o;
+  }
+  function buildTree(from, to) {
+    var root = {};
+    for (var i = 0; i < grain.length; i++) {
+      var g = grain[i]; if (!within(g.d, from, to)) continue;
+      var c = root[g.camp] || (root[g.camp] = tblank(g.camp));
+      var s = c.kids[g.adset] || (c.kids[g.adset] = tblank(g.adset));
+      var a = s.kids[g.ad] || (s.kids[g.ad] = tblank(g.ad));
+      a.spend += g.spend; a.impr += g.impr; a.reach += g.reach; a.clk += g.clk; a.lpv += g.lpv; a.pur += g.pur; a.val += g.val;
+    }
+    var RAW = ['spend', 'impr', 'reach', 'clk', 'lpv', 'pur', 'val'];
+    function roll(node, key, level) {
+      var kids = Object.keys(node.kids).map(function (k) { return roll(node.kids[k], key + ' ▸ ' + k, level + 1); });
+      var agg = tblank(node.label);
+      RAW.forEach(function (k) { agg[k] = node[k]; });
+      kids.forEach(function (c) { RAW.forEach(function (k) { agg[k] += c[k]; }); });
+      var d = tderive(agg); d.key = key; d.level = level; d.kids = kids;
+      return d;
+    }
+    return Object.keys(root).map(function (k) { return roll(root[k], k, 0); });
+  }
+  function adsByName(from, to) {
+    var map = {};
+    for (var i = 0; i < grain.length; i++) {
+      var g = grain[i]; if (!within(g.d, from, to)) continue;
+      var a = map[g.ad] || (map[g.ad] = tblank(g.ad));
+      a.spend += g.spend; a.impr += g.impr; a.reach += g.reach; a.clk += g.clk; a.lpv += g.lpv; a.pur += g.pur; a.val += g.val;
+    }
+    return Object.keys(map).map(function (k) { return tderive(map[k]); }).filter(function (a) { return a.spend > 0 || a.pur > 0; });
+  }
+
+  /* colunas padrão da árvore/tabela diária */
+  var TCOLS = [
+    { k: 'label', label: 'Campanha › Conjunto › Anúncio' },
+    { k: 'spend', label: 'Invest.', fmt: M.money },
+    { k: 'cpm', label: 'CPM', fmt: M.money, scale: 'low' },
+    { k: 'ctr', label: 'CTR', fmt: M.pct1, scale: 'high' },
+    { k: 'cpc', label: 'CPC', fmt: M.money, scale: 'low' },
+    { k: 'lpv', label: 'LPV', fmt: M.int },
+    { k: 'cpl', label: 'Custo/LPV', fmt: M.money, scale: 'low' },
+    { k: 'pur', label: 'Compras (px)', fmt: M.int },
+    { k: 'custoCompra', label: 'Custo/compra', fmt: M.money, scale: 'low' },
+    { k: 'roas', label: 'ROAS (px)', fmt: M.x, scale: 'high' }
+  ];
+
+  /* ================================================================ VISÃO GERAL */
+  function renderOverview() {
+    var from = STATE.from, to = STATE.to, len = diffDays(from, to) + 1;
+    var pTo = dayAdd(from, -1), pFrom = dayAdd(pTo, -(len - 1));
+    var cur = aggregate(from, to), prev = STATE.compare ? aggregate(pFrom, pTo) : null;
+
+    var h = health(cur), sc = scoreColor(h.score);
+    var healthHTML = gauge(h.score, sc) +
+      '<div><p class="health-head">Saúde do funil' +
+      '<span class="tag" style="background:color-mix(in srgb,' + sc + ' 20%,transparent);color:' + sc + '">' + h.band + '</span>' +
+      '<span style="font-size:11.5px;font-weight:500;color:var(--ink-3);margin-left:6px">' + (h.score == null ? '—' : h.score + '/100') + ' · pela sua régua de benchmarks</span></p>' +
+      '<div class="hbars" style="margin-top:12px">' + h.bars.map(function (b) {
+        var col = b.score == null ? 'var(--ink-3)' : scoreColor(b.score);
+        var w = b.score == null ? 0 : Math.max(0, Math.min(100, b.score));
+        var lim = b.band.dir === 'high' ? 'bom ≥ ' + b.band.fmt(b.band.good) : 'bom ≤ ' + b.band.fmt(b.band.good);
+        return '<div class="hbar"><div class="hb-top"><em>' + b.label + ' <span style="color:var(--ink-3);font-weight:500">· ' + lim + '</span></em><strong>' + b.valueStr + '</strong></div>' +
+          '<div class="hb-track"><div class="hb-fill" style="width:' + w.toFixed(0) + '%;background:' + col + '"></div></div></div>';
+      }).join('') + '</div></div>';
+
+    var heroHTML =
+      '<div class="hcard"><div class="hk">💸 Investimento <small>em venda</small></div>' +
+      '<div class="hv">' + M.money(cur.spendVenda) + '</div><div class="hd">' + miniDelta(cur.spendVenda, prev && prev.spendVenda, null) + ' vs anterior</div></div>' +
+      '<div class="op">→</div>' +
+      '<div class="hcard"><div class="hk">💰 Faturamento <small>Hotmart</small></div>' +
+      '<div class="hv g">' + M.money(cur.fat) + '</div><div class="hd">' + miniDelta(cur.fat, prev && prev.fat, true) + ' vs anterior</div></div>' +
+      '<div class="op">=</div>' +
+      '<div class="hcard roas"><div class="hk">📈 ROAS <small>retorno</small></div>' +
+      '<div class="hv">' + M.x(cur.roas) + '</div><div class="hd">' + miniDelta(cur.roas, prev && prev.roas, true) + ' vs anterior</div></div>' +
+      '<div class="op">·</div>' +
+      '<div class="hcard"><div class="hk">🎯 CAC <small>custo/venda</small></div>' +
+      '<div class="hv">' + M.money(cur.cac) + '</div><div class="hd">' + int(cur.vendas) + ' venda(s) · ticket ' + M.money(cur.ticket) + '</div></div>';
+
+    var heroLine = ok(cur.roas)
+      ? 'Cada <b>R$ 1,00</b> investido em venda virou <b>' + M.money(cur.roas) + '</b> de faturamento · ' + M.money(cur.spendVenda) + ' → ' + M.money(cur.fat) + ' no período. Resultado de caixa (fat − invest. total): <b>' + M.money(cur.resultado) + '</b>.'
+      : 'Sem venda no período — ainda sem ROAS pra medir.';
+
+    var overview =
+      '<div class="panel"><div class="health" id="health">' + healthHTML + '</div></div>' +
+      '<div class="hero" id="hero">' + heroHTML + '</div>' +
+      '<p class="hero-line" style="margin-bottom:10px">' + heroLine + '</p>' +
+      '<div class="scopenote"><span>🎯 <b>ROAS e CAC</b> usam só o investimento da campanha de <b>Venda</b> (' + M.money(cur.spendVenda) + '). O <b>Topo</b> (' + M.money(cur.spendTopo) + ') é aquecimento/conteúdo e entra no investimento total, não no retorno.</span></div>' +
+      '<div class="panel"><h2>Investimento por funil <span style="font-weight:500;color:var(--ink-3)">— com imposto ×' + taxStr(TAX) + '</span></h2><div class="funil-grid" id="funilInv"></div></div>' +
+      '<div class="grid-funnel">' +
+      '<div class="panel"><h2>Funil completo</h2><p class="note">Investimento → Impressões → Cliques → Page views → Checkouts → Vendas. Cada etapa mostra o <b>volume</b> e, à direita, o <b>custo</b> e a <b>taxa de passagem</b>.</p><div class="funnel" id="funnel"></div></div>' +
+      '<div class="panel"><h2>Resultados por dia</h2><p class="note">Barras = <b>Investimento c/ imposto</b> (esq., R$) · linha = <b>Vendas</b> (dir., nº).</p><div class="legend" id="legA"></div><div id="chA"></div>' +
+      '<h2 style="margin-top:20px">Faturamento × Investimento × ROAS</h2><p class="note">Barras = <b>Faturamento</b> e <b>Investimento</b> (esq., R$) · linha = <b>ROAS</b> (dir.).</p><div class="legend" id="legB"></div><div id="chB"></div></div>' +
+      '</div>' +
+      '<div class="panel"><h2 id="metricTitle">Investimento por dia</h2><p class="note">Escolha a métrica; com a comparação ligada, a linha tracejada é o período anterior alinhado dia a dia.</p><div class="tabs" id="metricTabs"></div><div class="legend" id="legend"></div><div id="chMetric"></div></div>' +
+      '<div class="panel"><h2>Visão diária — principais métricas por dia</h2><p class="note">Uma linha por dia, mais recente no topo. Heatmap por coluna: <b style="color:var(--good-text)">verde = melhor</b>, <b style="color:var(--critical)">vermelho = pior</b> no período.</p><div class="tblwrap"><table id="dtbl" class="daily"></table></div></div>';
+
+    $('overviewView').innerHTML = overview;
+
+    renderFunilInv(from, to);
+    renderFunnel(cur);
+    // gráficos
+    var rows = dailyRows(from, to), pRows = dailyRows(pFrom, pTo);
+    comboChart($('chA'), rows, { bars: [{ key: 'spend', color: 'var(--critical)', name: 'Investimento c/ imposto' }], line: { key: 'vendas', color: 'var(--good)', name: 'Vendas' }, leftFmt: M.money0, rightFmt: M.int, lineFmt: M.int });
+    comboChart($('chB'), rows, { bars: [{ key: 'fat', color: 'var(--good)', name: 'Faturamento' }, { key: 'spend', color: 'var(--critical)', name: 'Investimento c/ imposto' }], line: { key: 'roas', color: 'var(--ink-1)', name: 'ROAS' }, leftFmt: M.money0, rightFmt: M.x, lineFmt: M.x });
+    var lgSq = function (c) { return '<i style="background:' + c + '"></i>'; }, lgLn = function (c) { return '<i style="width:15px;height:0;border-top:2px solid ' + c + ';border-radius:0"></i>'; };
+    $('legA').innerHTML = '<span>' + lgSq('var(--critical)') + '<span style="color:var(--ink-2)">Investimento c/ imposto</span></span><span>' + lgLn('var(--good)') + '<span style="color:var(--ink-2)">Vendas (eixo dir.)</span></span>';
+    $('legB').innerHTML = '<span>' + lgSq('var(--good)') + '<span style="color:var(--ink-2)">Faturamento</span></span><span>' + lgSq('var(--critical)') + '<span style="color:var(--ink-2)">Investimento</span></span><span>' + lgLn('var(--ink-1)') + '<span style="color:var(--ink-2)">ROAS (eixo dir.)</span></span>';
+
+    // métrica selecionável
+    var METRICS = [
+      { k: 'spend', label: 'Investimento', fmt: M.money0 }, { k: 'vendas', label: 'Vendas', fmt: M.int },
+      { k: 'fat', label: 'Faturamento', fmt: M.money0 }, { k: 'roas', label: 'ROAS', fmt: M.x },
+      { k: 'cac', label: 'CAC', fmt: M.money0 }, { k: 'cpc', label: 'CPC', fmt: M.money },
+      { k: 'cpm', label: 'CPM', fmt: M.money0 }, { k: 'ctr', label: 'CTR', fmt: M.pct1 },
+      { k: 'impr', label: 'Impressões', fmt: M.int }, { k: 'clk', label: 'Cliques', fmt: M.int }, { k: 'lpv', label: 'Page Views', fmt: M.int }
+    ];
+    $('metricTabs').innerHTML = METRICS.map(function (x) { return '<button class="btn' + (x.k === STATE.metric ? ' on' : '') + '" data-metric="' + x.k + '">' + x.label + '</button>'; }).join('');
+    var met = METRICS.find(function (m) { return m.k === STATE.metric; }) || METRICS[0];
+    var series = [{ name: 'Período atual', color: 'var(--series-1)', values: rows.map(function (r) { return r[met.k]; }), fullLabels: rows.map(function (r) { return brFull(r.d); }) }];
+    if (STATE.compare) series.push({ name: 'Período anterior', color: 'var(--series-2)', dashed: true, values: rows.map(function (_, i) { return pRows[i] ? pRows[i][met.k] : null; }) });
+    $('legend').innerHTML = series.length > 1 ? series.map(function (s) { return '<span style="color:' + s.color + '"><i class="' + (s.dashed ? 'dash' : '') + '" style="background:' + (s.dashed ? 'transparent' : s.color) + '"></i><span style="color:var(--ink-2)">' + s.name + '</span></span>'; }).join('') : '';
+    lineChart($('chMetric'), rows.map(function (r) { return brDate(r.d); }), series, met.fmt);
+    $('metricTitle').textContent = met.label + ' por dia';
+    Array.prototype.forEach.call(document.querySelectorAll('[data-metric]'), function (b) { b.onclick = function () { STATE.metric = b.dataset.metric; renderOverview(); }; });
+
+    renderDaily(from, to);
+  }
+
+  var FUNIL_META = {
+    Topo: { color: 'var(--series-2)', desc: 'topo — alcance / aquecimento' },
+    Venda: { color: 'var(--brand)', desc: 'conversão / venda direta' },
+    Outros: { color: 'var(--ink-3)', desc: 'demais campanhas' }
+  };
+  function renderFunilInv(from, to) {
     var g = {}, total = 0;
-    for (var i = 0; i < grain.length; i++) {
-      var x = grain[i]; if (!within(x.d, r)) continue;
-      var f = funnelOf(x.camp);
-      if (!g[f]) g[f] = { spend: 0, clk: 0, lpv: 0, pur: 0, impr: 0 };
-      g[f].spend += x.spend; g[f].clk += x.clk; g[f].lpv += x.lpv; g[f].pur += x.pur; g[f].impr += x.impr;
-      total += x.spend;
-    }
+    for (var i = 0; i < grain.length; i++) { var x = grain[i]; if (!within(x.d, from, to)) continue; var f = funnelOf(x.camp); (g[f] || (g[f] = { spend: 0, clk: 0, lpv: 0, pur: 0, impr: 0 })); g[f].spend += x.spend; g[f].clk += x.clk; g[f].lpv += x.lpv; g[f].pur += x.pur; g[f].impr += x.impr; total += x.spend; }
     var cards = ['Topo', 'Venda', 'Outros'].filter(function (k) { return g[k]; }).map(function (k) {
-      var o = g[k], m = FUNIL_META[k];
-      var share = total ? o.spend / total : 0;
-      var detail = (k === 'Venda')
-        ? (int(o.pur) + ' compra(s) · ' + int(o.lpv) + ' LPV')
-        : (int(o.impr) + ' impressões · ' + int(o.clk) + ' cliques');
-      return '<div class="card funil"><div class="fshare">' + pct(share) + '</div>' +
-        '<div class="ftop"><span class="fico" style="background:' + m.color + '"></span>' + k + '</div>' +
-        '<div class="fmain" style="color:' + m.color + '">' + money0(o.spend) + '</div>' +
-        '<div class="fmeta">' + m.desc + '<br>' + detail + '</div></div>';
+      var o = g[k], m = FUNIL_META[k], share = total ? o.spend / total : 0;
+      var detail = k === 'Venda' ? (int(o.pur) + ' compra(s) px · ' + int(o.lpv) + ' LPV') : (int(o.impr) + ' impressões · ' + int(o.clk) + ' cliques');
+      return '<div class="finv"><div class="fshare">' + pct1(share) + '</div><div class="ftop"><span class="fico" style="background:' + m.color + '"></span>' + k + '</div><div class="fmain" style="color:' + m.color + '">' + money0(o.spend) + '</div><div class="fmeta">' + m.desc + '<br>' + detail + '</div></div>';
     });
-    cards.push('<div class="card funil total"><div class="ftop">Σ Total</div>' +
-      '<div class="fmain">' + money0(total) + '</div>' +
-      '<div class="fmeta">soma dos funis · com imposto ×' + taxMult() + '</div></div>');
-    el('funilInv').innerHTML = cards.join('');
+    cards.push('<div class="finv total"><div class="ftop">Σ Total</div><div class="fmain">' + money0(total) + '</div><div class="fmeta">soma dos funis · com imposto ×' + taxStr(TAX) + '</div></div>');
+    $('funilInv').innerHTML = cards.join('');
   }
-
   function renderFunnel(c) {
-    var ic = c.vendas + c.checkouts; // Iniciar Checkout (Hotmart: aprovadas + abandonos)
     var stages = [
-      { n: 'Impressões', v: c.impr, fmt: int, col: 'var(--brand)' },
-      { n: 'Cliques no link', v: c.clk, fmt: int, col: 'var(--brand2)', conv: 'CTR ' + pct(div(c.clk, c.impr)) },
-      { n: 'Landing Page Views', v: c.lpv, fmt: int, col: 'var(--cyan)', conv: pct(div(c.lpv, c.clk)) + ' dos cliques' },
-      { n: 'Iniciar checkout (IC)', v: ic, fmt: int, col: 'var(--amber)', conv: 'Taxa de checkout: ' + pct(div(ic, c.lpv)) + ' das LPV' },
-      { n: 'Vendas (Hotmart)', v: c.vendas, fmt: int, col: 'var(--green)', conv: 'Conversão de checkout: ' + pct(div(c.vendas, ic)) + ' dos IC' }
+      { n: 'Investimento', big: M.money(c.spend), bg: '#8fe01e', ink: '#0c1400', cl: 'Gasto bruto', cv: M.money(c.spend / TAX), sub: '+ imposto ×' + taxStr(TAX) + ' = <b>' + M.money(c.spend) + '</b>' },
+      { n: 'Impressões', big: M.int(c.impr), bg: '#7ecb1c', ink: '#0c1400', cl: 'CPM', cv: M.money(c.cpm), sub: 'CTR <b>' + M.pct1(c.ctr) + '</b>' },
+      { n: 'Cliques', big: M.int(c.clk), bg: '#63b015', ink: '#0c1400', cl: 'CPC', cv: M.money(c.cpc), sub: 'Clique → Page view <b>' + M.pct1(c.connect) + '</b>' },
+      { n: 'Page views', big: M.int(c.lpv), bg: '#4a8a0a', ink: '#fff', cl: 'Custo / Page view', cv: M.money(c.cpl), sub: 'Page view → Checkout <b>' + M.pct1(c.lpCheck) + '</b>' },
+      { n: 'Checkouts (IC)', big: M.int(c.ic), bg: '#356606', ink: '#fff', cl: 'Custo / Checkout', cv: M.money(c.cpic), sub: 'Checkout → Venda <b>' + M.pct1(c.convCheck) + '</b>' },
+      { n: 'Vendas (Hotmart)', big: M.int(c.vendas), bg: '#244a04', ink: '#fff', cl: 'CAC', cv: M.money(c.cac), sub: 'ROAS <b>' + M.x(c.roas) + '</b> · ticket <b>' + M.money(c.ticket) + '</b>' }
     ];
-    var max = Math.max(1, c.impr);
-    var html = '<div class="fstage" style="margin-bottom:16px"><div class="fhead"><span class="fn">Investimento</span>' +
-      '<span class="fv" style="color:var(--tx)">' + money(c.spend) + '</span></div></div>';
-    html += stages.map(function (s) {
-      var w = Math.max(0.6, (s.v / max) * 100);
-      return '<div class="fstage"><div class="fhead"><span class="fn">' + s.n + '</span><span class="fv" style="color:' + s.col + '">' + s.fmt(s.v) + '</span></div>' +
-        '<div class="fbar-bg"><div class="fbar" style="width:' + w + '%;background:' + s.col + '"></div></div>' +
-        (s.conv ? '<div class="fconv">' + s.conv + '</div>' : '') + '</div>';
+    $('funnel').innerHTML = stages.map(function (s) {
+      return '<div class="fstage"><div class="fl" style="background:' + s.bg + ';color:' + s.ink + '"><div class="fn">' + s.n + '</div><div class="fv">' + s.big + '</div></div>' +
+        '<div class="fr"><div class="cl">' + s.cl + '</div><div class="cv">' + s.cv + '</div><div class="fsub">' + s.sub + '</div></div></div>';
     }).join('');
-    el('funnel').innerHTML = html;
   }
 
-  // ---------- chart ----------
-  function renderChart(r) {
-    var days = [];
-    for (var i = 0; i < daily.length; i++) { if (within(daily[i].d, r)) days.push(daily[i]); }
-    var svg = el('chart');
-    el('legend').innerHTML = '<span><i style="background:var(--brand)"></i>Investimento/dia</span>' +
-      '<span><i style="background:var(--green)"></i>Venda (Hotmart)</span>' +
-      '<span><i style="background:var(--amber)"></i>Checkout iniciado</span>';
-    if (!days.length) { svg.innerHTML = ''; return; }
-    var W = 1000, H = 230, padL = 44, padR = 12, padB = 26, padT = 12;
-    var iw = W - padL - padR, ih = H - padT - padB;
-    var maxSpend = Math.max.apply(null, days.map(function (d) { return d.spend; }).concat([1]));
-    var bw = iw / days.length;
-    var s = '';
-    // y grid (4 lines)
-    for (var g = 0; g <= 4; g++) {
-      var yv = maxSpend * g / 4; var y = padT + ih - (yv / maxSpend) * ih;
-      s += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="var(--line2)" stroke-width="1"/>';
-      s += '<text x="' + (padL - 6) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="var(--tx3)">' + money0(yv) + '</text>';
+  var DCOLS = [
+    { k: 'd', label: 'Dia' }, { k: 'spend', label: 'Invest.', fmt: M.money }, { k: 'cpm', label: 'CPM', fmt: M.money, scale: 'low' },
+    { k: 'cpc', label: 'CPC', fmt: M.money, scale: 'low' }, { k: 'ctr', label: 'CTR', fmt: M.pct1, scale: 'high' },
+    { k: 'lpv', label: 'LPV', fmt: M.int }, { k: 'ic', label: 'Checkouts', fmt: M.int }, { k: 'cpic', label: 'C/Checkout', fmt: M.money, scale: 'low' },
+    { k: 'vendas', label: 'Vendas', fmt: M.int }, { k: 'fat', label: 'Fat.', fmt: M.money }, { k: 'cac', label: 'CAC', fmt: M.money, scale: 'low' }, { k: 'roas', label: 'ROAS', fmt: M.x, scale: 'high' }
+  ];
+  function renderDaily(from, to) {
+    var rows = dailyRows(from, to).reverse();
+    var scales = {};
+    DCOLS.filter(function (c) { return c.scale; }).forEach(function (c) {
+      var vals = rows.filter(function (r) { return r.spend > 0 && ok(r[c.k]); }).map(function (r) { return r[c.k]; });
+      if (vals.length > 1) scales[c.k] = { min: Math.min.apply(null, vals), max: Math.max.apply(null, vals), dir: c.scale };
+    });
+    function heat(k, v) {
+      var s = scales[k]; if (!s || !ok(v) || s.max === s.min) return '';
+      var t = (v - s.min) / (s.max - s.min); if (s.dir === 'low') t = 1 - t;
+      var hue = t >= 0.5 ? 'var(--good)' : 'var(--critical)', strength = Math.round(Math.abs(t - 0.5) * 2 * 32);
+      return strength < 6 ? '' : 'background:color-mix(in srgb,' + hue + ' ' + strength + '%,transparent)';
     }
-    // bars + markers
-    for (var j = 0; j < days.length; j++) {
-      var d = days[j];
-      var bh = (d.spend / maxSpend) * ih;
-      var x = padL + j * bw;
-      var bx = x + bw * 0.18, bwid = bw * 0.64;
-      s += '<rect x="' + bx.toFixed(1) + '" y="' + (padT + ih - bh).toFixed(1) + '" width="' + bwid.toFixed(1) + '" height="' + Math.max(0, bh).toFixed(1) + '" rx="2" fill="var(--brand)" opacity="0.85"><title>' + brDateFull(d.d) + '\n' + money(d.spend) + '</title></rect>';
-      var cx = x + bw / 2;
-      if (d.vendas > 0) { s += '<circle cx="' + cx.toFixed(1) + '" cy="' + (padT + 8) + '" r="5" fill="var(--green)"><title>' + brDateFull(d.d) + '\n' + int(d.vendas) + ' venda(s) · ' + money(d.fat) + '</title></circle>'; }
-      if (d.checkouts > 0) { s += '<circle cx="' + cx.toFixed(1) + '" cy="' + (padT + 20) + '" r="4" fill="var(--amber)"><title>' + int(d.checkouts) + ' checkout(s) iniciado(s)</title></circle>'; }
-      if (days.length <= 40 || j % Math.ceil(days.length / 20) === 0) {
-        s += '<text x="' + cx.toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="9" fill="var(--tx3)">' + brDate(d.d) + '</text>';
-      }
-    }
-    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    svg.innerHTML = s;
-  }
-
-  // ---------- table ----------
-  var TABS = [{ k: 'camp', label: 'Campanha' }, { k: 'adset', label: 'Conjunto' }, { k: 'ad', label: 'Anúncio' }];
-  var sortState = { col: 'spend', dir: -1 };
-
-  function groupKey(row, tab) {
-    if (tab === 'camp') return row.camp;
-    if (tab === 'adset') return row.camp + ' ‖ ' + row.adset;
-    return row.camp + ' ‖ ' + row.adset + ' ‖ ' + row.ad;
-  }
-  function groupName(row, tab) {
-    if (tab === 'camp') return row.camp;
-    if (tab === 'adset') return row.adset;
-    return row.ad;
-  }
-
-  function renderTabs() {
-    el('tabs').innerHTML = TABS.map(function (t) {
-      return '<button data-k="' + t.k + '" class="' + (t.k === state.tab ? 'on' : '') + '">' + t.label + '</button>';
+    var head = DCOLS.map(function (c) { return '<th>' + c.label + '</th>'; }).join('');
+    var body = rows.map(function (r) {
+      return '<tr>' + DCOLS.map(function (c) {
+        if (c.k === 'd') return '<td>' + brFull(r.d) + '</td>';
+        var st = c.scale ? heat(c.k, r[c.k]) : '', v = c.fmt(r[c.k]);
+        return '<td>' + (st ? '<span class="cell-scale" style="' + st + '">' + v + '</span>' : v) + '</td>';
+      }).join('') + '</tr>';
     }).join('');
-    Array.prototype.forEach.call(el('tabs').children, function (b) {
-      b.onclick = function () { state.tab = b.getAttribute('data-k'); render(); };
-    });
+    $('dtbl').innerHTML = '<thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody>';
   }
 
-  function renderTable(r) {
-    renderTabs();
-    var groups = {};
-    for (var i = 0; i < grain.length; i++) {
-      var g = grain[i]; if (!within(g.d, r)) continue;
-      var key = groupKey(g, state.tab);
-      if (!groups[key]) groups[key] = { name: groupName(g, state.tab), sub: g.camp, spend: 0, impr: 0, clk: 0, lpv: 0, pur: 0, val: 0 };
-      var o = groups[key];
-      o.spend += g.spend; o.impr += g.impr; o.clk += g.clk; o.lpv += g.lpv; o.pur += g.pur; o.val += g.val;
-    }
-    var rows = Object.keys(groups).map(function (k) {
-      var o = groups[k];
-      o.cpm = div(o.spend, o.impr) * 1000;
-      o.ctr = div(o.clk, o.impr);
-      o.cpc = div(o.spend, o.clk);
-      o.custoLpv = div(o.spend, o.lpv);
-      o.custoCompra = o.pur ? div(o.spend, o.pur) : Infinity;
-      o.roas = div(o.val, o.spend);
-      return o;
-    });
-    // best cost/purchase among those with purchases
-    var withPur = rows.filter(function (x) { return x.pur > 0; });
-    var bestCC = withPur.length ? Math.min.apply(null, withPur.map(function (x) { return x.custoCompra; })) : null;
+  /* ================================================================ TRÁFEGO PAGO */
+  function renderTraffic() {
+    var from = STATE.from, to = STATE.to, len = diffDays(from, to) + 1;
+    var pTo = dayAdd(from, -1), pFrom = dayAdd(pTo, -(len - 1));
+    var cur = aggregate(from, to), prev = STATE.compare ? aggregate(pFrom, pTo) : null;
 
-    rows.sort(function (a, b) {
-      var av = a[sortState.col], bv = b[sortState.col];
-      if (sortState.col === 'name') { av = a.name; bv = b.name; return (av < bv ? -1 : av > bv ? 1 : 0) * -sortState.dir; }
-      if (av === Infinity) av = -1; if (bv === Infinity) bv = -1;
-      return (av - bv) * sortState.dir;
-    });
-
-    var cols = [
-      { k: 'name', t: state.tab === 'camp' ? 'Campanha' : (state.tab === 'adset' ? 'Conjunto' : 'Anúncio') },
-      { k: 'spend', t: 'Gasto' }, { k: 'cpm', t: 'CPM' }, { k: 'ctr', t: 'CTR' }, { k: 'cpc', t: 'CPC' },
-      { k: 'lpv', t: 'LPV' }, { k: 'custoLpv', t: 'Custo/LPV' }, { k: 'pur', t: 'Compras' },
-      { k: 'custoCompra', t: 'Custo/compra' }, { k: 'roas', t: 'ROAS' }
+    function kpi(lbl, val, sub, delta) { return '<div class="kpi"><div class="k">' + lbl + '</div><div class="v sm">' + val + '</div><div class="d">' + (delta || '') + (sub ? '<span>' + sub + '</span>' : '') + '</div></div>'; }
+    var kpis = [
+      kpi('Investimento', M.money0(cur.spend), 'Topo + Venda', miniDelta(cur.spend, prev && prev.spend, null)),
+      kpi('CPM', M.money(cur.cpm), 'bom ≤ R$35', flagFor('cpm', cur.cpm)),
+      kpi('CTR', M.pct1(cur.ctr), 'bom ≥ 2,5%', flagFor('ctr', cur.ctr)),
+      kpi('CPC', M.money(cur.cpc), 'bom ≤ R$2', flagFor('cpc', cur.cpc)),
+      kpi('Cliques', M.int(cur.clk), int(cur.impr) + ' impressões', ''),
+      kpi('Connect rate', M.pct1(cur.connect), 'LPV ÷ cliques ⚠️', flagFor('connect', cur.connect)),
+      kpi('Compras (pixel)', M.int(cur.purPixel), 'Adveronix — atribuição', ''),
+      kpi('Custo/checkout', M.money(cur.cpic), 'bom ≤ R$20', flagFor('cpic', cur.cpic))
     ];
-    if (!rows.length) { el('table').innerHTML = '<div class="empty">Sem dados de anúncios neste período.</div>'; return; }
-    var thead = '<tr>' + cols.map(function (c) {
-      return '<th data-k="' + c.k + '" class="' + (sortState.col === c.k ? 'sorted' : '') + '">' + c.t + (sortState.col === c.k ? (sortState.dir < 0 ? ' ↓' : ' ↑') : '') + '</th>';
-    }).join('') + '</tr>';
-    var tbody = rows.map(function (o) {
-      var ccCell = o.pur ? money(o.custoCompra) : '<span class="muted">—</span>';
-      if (o.pur && bestCC != null && o.custoCompra === bestCC) ccCell = '<span class="pill good">' + money(o.custoCompra) + '</span>';
-      var roasCell = o.pur ? (num2(o.roas) + 'x') : '<span class="muted">—</span>';
-      return '<tr>' +
-        '<td title="' + esc(o.name) + '">' + esc(o.name) + '</td>' +
-        '<td>' + money(o.spend) + '</td>' +
-        '<td>' + money(o.cpm) + '</td>' +
-        '<td>' + pct(o.ctr) + '</td>' +
-        '<td>' + (o.clk ? money(o.cpc) : '<span class="muted">—</span>') + '</td>' +
-        '<td>' + int(o.lpv) + '</td>' +
-        '<td>' + (o.lpv ? money(o.custoLpv) : '<span class="muted">—</span>') + '</td>' +
-        '<td>' + int(o.pur) + '</td>' +
-        '<td>' + ccCell + '</td>' +
-        '<td>' + roasCell + '</td>' +
-        '</tr>';
-    }).join('');
-    el('table').innerHTML = '<table><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table>';
-    Array.prototype.forEach.call(el('table').querySelectorAll('th'), function (th) {
-      th.onclick = function () {
-        var k = th.getAttribute('data-k');
-        if (sortState.col === k) sortState.dir *= -1; else { sortState.col = k; sortState.dir = k === 'name' ? 1 : -1; }
-        render();
+
+    $('trafficView').innerHTML =
+      '<div class="scopenote"><span>🎯 Aba operacional: tudo aqui vem do <b>pixel (Adveronix)</b> — as métricas de mídia e a atribuição de compras por anúncio. Compras do pixel são <b>sinal de otimização</b>, não faturamento (o faturamento real é a Hotmart, na Visão Geral).</span></div>' +
+      '<div class="kpis">' + kpis.join('') + '</div>' +
+      '<div class="panel"><h2>Investimento por funil <span style="font-weight:500;color:var(--ink-3)">— com imposto ×' + taxStr(TAX) + '</span></h2><div class="funil-grid" id="funilInv"></div></div>' +
+      '<div class="panel"><h2>Otimização — Campanha › Conjunto › Anúncio</h2>' +
+      '<p class="note">Clique numa <b>campanha</b> pra abrir os conjuntos, e num conjunto pra abrir os anúncios. Clique nos cabeçalhos pra ordenar. Atribuição de compras por <b>pixel</b>. Heatmap: verde = melhor. (px) = pixel.</p>' +
+      '<div class="tblwrap"><table id="tbl" class="tree"></table></div></div>';
+
+    renderFunilInv(from, to);
+    renderTree(from, to);
+  }
+  function flagFor(k, v) {
+    var st = statusOf(v, BANDS[k]); if (!st) return '';
+    return '<span class="rep-flag ' + st.cls + '">' + st.word + '</span>';
+  }
+  function sortNodes(list, key, dir) {
+    return list.slice().sort(function (a, b) {
+      if (key === 'label') return dir * a.label.localeCompare(b.label, 'pt-BR');
+      var av = a[key], bv = b[key], an = !ok(av), bn = !ok(bv);
+      if (an && bn) return 0; if (an) return 1; if (bn) return -1; return dir * (av - bv);
+    });
+  }
+  function renderTree(from, to) {
+    var camps = buildTree(from, to);
+    var key = STATE.treeSort.key, dir = STATE.treeSort.dir;
+    // escala de cor no nível de campanha
+    var scales = {};
+    TCOLS.filter(function (c) { return c.scale; }).forEach(function (c) {
+      var vals = camps.filter(function (r) { return r.spend > 0 && ok(r[c.k]); }).map(function (r) { return r[c.k]; });
+      if (vals.length > 1) scales[c.k] = { min: Math.min.apply(null, vals), max: Math.max.apply(null, vals), dir: c.scale };
+    });
+    function shade(k, v) { var s = scales[k]; if (!s || !ok(v) || s.max === s.min) return ''; var t = (v - s.min) / (s.max - s.min); if (s.dir === 'low') t = 1 - t; if (t < 0.15) return ''; return 'background:color-mix(in srgb,var(--scale-ink) ' + Math.round(t * 32) + '%,transparent)'; }
+    var head = TCOLS.map(function (c) { var active = key === c.k; var arw = active ? (dir === 1 ? '▲' : '▼') : '▾'; return '<th data-k="' + c.k + '"' + (active ? ' data-active' : '') + '>' + c.label + '<span class="arw">' + arw + '</span></th>'; }).join('');
+    function flatten() {
+      var out = [];
+      sortNodes(camps, key, dir).forEach(function (c) {
+        out.push(c);
+        if (STATE.expanded[c.key]) sortNodes(c.kids, key, dir).forEach(function (s) {
+          out.push(s);
+          if (STATE.expanded[s.key]) sortNodes(s.kids, key, dir).forEach(function (a) { out.push(a); });
+        });
+      });
+      return out;
+    }
+    function rowHTML(r) {
+      var exp = r.level < 2 && r.kids && r.kids.length > 0, open = STATE.expanded[r.key];
+      var caret = '<span class="caret">' + (exp ? '▸' : '') + '</span>';
+      return '<tr class="lv' + r.level + (exp ? ' exp' : '') + (open ? ' open' : '') + '" data-key="' + encodeURIComponent(r.key) + '">' +
+        '<td><span class="nm">' + caret + esc(r.label) + '</span></td>' +
+        TCOLS.slice(1).map(function (c) { var st = c.scale ? shade(c.k, r[c.k]) : ''; var v = c.fmt(r[c.k]); return '<td>' + (st ? '<span class="cell-scale" style="' + st + '">' + v + '</span>' : v) + '</td>'; }).join('') + '</tr>';
+    }
+    var RAW = ['spend', 'impr', 'reach', 'clk', 'lpv', 'pur', 'val'];
+    var tot = tderive(camps.reduce(function (t, r) { RAW.forEach(function (k) { t[k] += r[k]; }); return t; }, tblank('')));
+    var rows = flatten();
+    $('tbl').innerHTML = '<thead><tr>' + head + '</tr></thead><tbody>' +
+      (rows.map(rowHTML).join('') || '<tr><td colspan="' + TCOLS.length + '" style="text-align:center;color:var(--ink-3);padding:32px">Sem dados no período.</td></tr>') +
+      '</tbody><tfoot><tr><td>Total — ' + camps.length + ' campanha(s)</td>' + TCOLS.slice(1).map(function (c) { return '<td>' + c.fmt(tot[c.k]) + '</td>'; }).join('') + '</tr></tfoot>';
+    Array.prototype.forEach.call(document.querySelectorAll('#tbl tbody tr.exp'), function (tr) {
+      tr.querySelector('td:first-child').onclick = function () { var k = decodeURIComponent(tr.dataset.key); STATE.expanded[k] = !STATE.expanded[k]; renderTree(from, to); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#tbl thead th'), function (th) {
+      th.onclick = function () { var k = th.dataset.k; STATE.treeSort = key === k ? { key: k, dir: -dir } : { key: k, dir: k === 'label' ? 1 : -1 }; renderTree(from, to); };
+    });
+  }
+
+  /* ================================================================ RELATÓRIO */
+  function repStat(l, v) { return '<div class="rep-stat"><div class="l">' + l + '</div><div class="v">' + v + '</div></div>'; }
+  function renderReport() {
+    var from = STATE.from, to = STATE.to, days = diffDays(from, to) + 1;
+    var pTo = dayAdd(from, -1), pFrom = dayAdd(pTo, -(days - 1));
+    var cur = aggregate(from, to), prev = aggregate(pFrom, pTo);
+    var dRows = dailyRows(from, to), camps = buildTree(from, to), ads = adsByName(from, to);
+    var perLabel = days === 1 ? brFull(from) : brFull(from) + ' a ' + brFull(to) + ' · ' + days + ' dias';
+
+    /* ---- blocos visuais (print pro cliente) ---- */
+    function selo(k, v) { var st = statusOf(v, BANDS[k]); return st ? '<span class="rep-flag ' + st.cls + '">' + st.word + '</span>' : ''; }
+    var dTbl = '<div class="tblwrap"><table style="min-width:520px"><thead><tr><th style="text-align:left">Dia</th><th>Gasto</th><th>Cliques</th><th>Checkouts</th><th>Vendas</th><th>Fat.</th><th>ROAS</th></tr></thead><tbody>' +
+      dRows.slice().reverse().map(function (r) { return '<tr><td style="text-align:left">' + brFull(r.d) + '</td><td>' + M.money(r.spend) + '</td><td>' + int(r.clk) + '</td><td>' + int(r.ic) + '</td><td>' + int(r.vendas) + '</td><td>' + M.money(r.fat) + '</td><td>' + M.x(r.roas) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+
+    var secVisual =
+      '<div class="rep-sec"><div class="step">1 · RESUMO</div><h3>📊 Números do período</h3><div class="rep-stats">' +
+      repStat('Investimento total', M.money(cur.spend)) + repStat('Invest. em venda', M.money(cur.spendVenda)) +
+      repStat('Faturamento', M.money(cur.fat)) + repStat('Vendas', int(cur.vendas)) +
+      repStat('ROAS', M.x(cur.roas)) + repStat('CAC', M.money(cur.cac)) + '</div>' +
+      '<p class="rep-p muted">Resultado de caixa no período (faturamento − investimento total): <b>' + M.money(cur.resultado) + '</b>.</p></div>' +
+
+      '<div class="rep-sec"><div class="step">2 · TOPO DE FUNIL (MÍDIA)</div><h3>🚀 Eficiência da mídia</h3><div class="rep-stats">' +
+      repStat('CTR ' + selo('ctr', cur.ctr), M.pct1(cur.ctr)) + repStat('CPC ' + selo('cpc', cur.cpc), M.money(cur.cpc)) +
+      repStat('CPM ' + selo('cpm', cur.cpm), M.money(cur.cpm)) + repStat('Impressões', int(cur.impr)) + repStat('Cliques', int(cur.clk)) + '</div>' +
+      '<p class="rep-p muted">Selos pela régua de benchmarks: CTR bom ≥ 2,5% · CPC bom ≤ R$2 · CPM bom ≤ R$35.</p></div>' +
+
+      '<div class="rep-sec"><div class="step">3 · FUNIL COMPLETO</div><h3>🔻 Do clique à venda</h3><div class="rep-stats">' +
+      repStat('Page views', int(cur.lpv)) + repStat('Checkouts (IC)', int(cur.ic)) +
+      repStat('Custo/checkout ' + selo('cpic', cur.cpic), M.money(cur.cpic)) +
+      repStat('Conv. checkout ' + selo('convCheck', cur.convCheck), M.pct1(cur.convCheck)) + repStat('Ticket médio', M.money(cur.ticket)) + '</div>' +
+      (cur.lpv < cur.clk * 0.3 ? '<p class="rep-p muted">⚠️ Page views parecem subnotificados pelo pixel (LPV ≪ cliques) — leia a connect rate com cautela.</p>' : '') + '</div>' +
+
+      '<div class="rep-sec"><div class="step">4 · DIA A DIA</div><h3>📅 Funil por dia</h3>' + dTbl + '</div>' +
+
+      '<div class="rep-sec"><div class="step">5 · CAMPANHAS</div><h3>🗂️ Investimento e compras (pixel)</h3>' +
+      '<div class="tblwrap"><table style="min-width:520px"><thead><tr><th style="text-align:left">Campanha</th><th>Gasto</th><th>CTR</th><th>CPC</th><th>Compras (px)</th><th>Custo/compra</th></tr></thead><tbody>' +
+      camps.filter(function (c) { return c.spend > 0; }).sort(function (a, b) { return b.spend - a.spend; }).map(function (c) { return '<tr><td style="text-align:left">' + esc(c.label) + '</td><td>' + M.money(c.spend) + '</td><td>' + M.pct1(c.ctr) + '</td><td>' + M.money(c.cpc) + '</td><td>' + int(c.pur) + '</td><td>' + M.money(c.custoCompra) + '</td></tr>'; }).join('') + '</tbody></table></div></div>' +
+
+      '<div class="rep-sec"><div class="step">6 · MELHORES ANÚNCIOS</div><h3>🏆 Destaques pra produzir mais</h3>' +
+      (function () {
+        var b = ads.filter(function (a) { return a.pur > 0; }).sort(function (a, z) { return (z.pur - a.pur) || (a.custoCompra - z.custoCompra); }).slice(0, 6);
+        return b.length ? b.map(function (a) { return '<div class="rep-ad"><div><span class="nm">' + esc(a.label) + '</span> <span class="mt">· ' + int(a.pur) + ' compra(s) px · custo/compra ' + M.money(a.custoCompra) + ' · ' + M.money(a.spend) + ' gastos</span></div><input data-adlink="' + encodeURIComponent(a.label) + '" placeholder="cole o link do anúncio (Instagram)"></div>'; }).join('')
+          : '<p class="rep-p muted">Sem compras atribuídas a um anúncio específico no período (pixel).</p>';
+      })() + '</div>';
+
+    /* ---- briefing do gestor (interno) ---- */
+    var brief = [];
+    var xGeral = 'Investimento total ' + M.money(cur.spend) + ' (Venda ' + M.money(cur.spendVenda) + ' · Topo ' + M.money(cur.spendTopo) + '). Faturamento ' + M.money(cur.fat) + ' em ' + int(cur.vendas) + ' venda(s) → ROAS ' + M.x(cur.roas) + ', CAC ' + M.money(cur.cac) + '. Resultado de caixa ' + M.money(cur.resultado) + '.'
+      + (cur.vendas > 0 && ok(cur.roas) && cur.roas < 1 ? ' O retorno ainda está abaixo de 1x — cada real investido volta ' + M.money(cur.roas) + '.' : '');
+    brief.push({ t: 'Leitura geral', h: '<p>' + xGeral + '</p>', x: xGeral });
+
+    var topStatus = [['ctr', cur.ctr], ['cpc', cur.cpc], ['cpm', cur.cpm]].map(function (p) { var st = statusOf(p[1], BANDS[p[0]]); return BANDS[p[0]].label + ' ' + BANDS[p[0]].fmt(p[1]) + ' (' + (st ? st.word : '—') + ')'; }).join(' · ');
+    var allTopGood = ['ctr', 'cpc', 'cpm'].every(function (k) { var st = statusOf(cur[k], BANDS[k]); return st && st.lvl === 'good'; });
+    var xTopo = 'Topo de funil: ' + topStatus + '. ' + (allTopGood ? 'A mídia está barata e atraente — o problema NÃO é gerar clique/atenção, é converter em venda.' : 'Há espaço pra melhorar a mídia (criativo/público) antes de escalar.');
+    brief.push({ t: 'Topo de funil (mídia)', h: '<p>' + xTopo + '</p>', x: xTopo });
+
+    var xFundo;
+    if (cur.vendas === 0) xFundo = 'Nenhuma venda no período — sem base pra medir conversão de fundo. Foco em volume qualificado e checar rastreamento (pixel de LPV/checkout).';
+    else {
+      var stCheck = statusOf(cur.convCheck, BANDS.convCheck);
+      xFundo = 'Checkouts iniciados ' + int(cur.ic) + ', vendas ' + int(cur.vendas) + ' → conversão de checkout ' + M.pct1(cur.convCheck) + ' (' + (stCheck ? stCheck.word : '—') + '). Custo por checkout ' + M.money(cur.cpic) + '. '
+        + (cur.lpv < cur.clk * 0.3 ? 'ATENÇÃO: LPV (' + int(cur.lpv) + ') muito abaixo dos cliques (' + int(cur.clk) + ') — quase certo que é o pixel de Landing Page View não disparando; a connect rate real deve ser bem maior. Vale conferir o rastreamento antes de concluir que a página não converte.' : '')
+        + ' Com CAC ' + M.money(cur.cac) + ' vs ticket ' + M.money(cur.ticket) + ', o retorno só fecha aumentando muito o volume de vendas ou o ticket (upsell/order bump).';
+    }
+    brief.push({ t: 'Fundo de funil (conversão)', h: '<p>' + xFundo + '</p>', x: xFundo });
+
+    var ds = dRows.filter(function (r) { return r.vendas > 0; });
+    var xDia;
+    if (ds.length) {
+      var best = ds.reduce(function (a, b) { return (b.cac || 1e9) < (a.cac || 1e9) ? b : a; });
+      var worst = ds.reduce(function (a, b) { return (b.cac || 0) > (a.cac || 0) ? b : a; });
+      xDia = ds.length + ' dia(s) com venda. Melhor: ' + brFull(best.d) + ' (CAC ' + M.money(best.cac) + ', ' + int(best.vendas) + ' vd)' + (worst !== best ? ' · pior: ' + brFull(worst.d) + ' (CAC ' + M.money(worst.cac) + ')' : '') + '.';
+    } else xDia = 'Sem vendas dia a dia no período — o gráfico de vendas fica zerado, mas o investimento/cliques continuam rodando.';
+    brief.push({ t: 'Dia a dia', h: '<p>' + xDia + '</p>', x: xDia });
+
+    // campanhas / anúncios (via pixel + gasto)
+    var active = camps.filter(function (c) { return c.spend > 0; });
+    var burning = ads.filter(function (a) { return a.spend >= cur.ticket * 2 && a.pur === 0; }).sort(function (a, b) { return b.spend - a.spend; }).slice(0, 4);
+    var winners = ads.filter(function (a) { return a.pur > 0 && ok(a.custoCompra); }).sort(function (a, b) { return a.custoCompra - b.custoCompra; }).slice(0, 4);
+    var campHtml = '';
+    if (winners.length) campHtml += '<p><span class="rep-flag g">CAMPEÕES</span> menor custo/compra (pixel):</p><ul>' + winners.map(function (a) { return '<li><b>' + esc(a.label) + '</b> — ' + int(a.pur) + ' compra(s) px, custo/compra ' + M.money(a.custoCompra) + ', ' + M.money(a.spend) + ' gastos.</li>'; }).join('') + '</ul>';
+    if (burning.length) campHtml += '<p style="margin-top:10px"><span class="rep-flag r">QUEIMANDO VERBA</span> gasto relevante sem compra (pixel):</p><ul>' + burning.map(function (a) { return '<li><b>' + esc(a.label) + '</b> — ' + M.money(a.spend) + ' gastos, 0 compra px — candidato a pausar/revisar criativo.</li>'; }).join('') + '</ul>';
+    if (!campHtml) campHtml = '<p class="rep-p muted">Ainda sem volume por anúncio pra separar campeões de perdedores com segurança.</p>';
+    campHtml += '<p class="rep-p muted" style="margin-top:8px">Atribuição por pixel — sinal de otimização, não faturamento. Não sei o que você já pausou.</p>';
+    var campX = 'Campeões (custo/compra px): ' + (winners.map(function (a) { return a.label + ' (' + M.money(a.custoCompra) + ')'; }).join('; ') || '—') + '.\nQueimando verba: ' + (burning.map(function (a) { return a.label + ' (' + M.money(a.spend) + ', 0 compra)'; }).join('; ') || '—') + '.';
+    brief.push({ t: 'Campanhas / anúncios', h: campHtml, x: campX });
+
+    // insights e gargalos
+    var ins = [];
+    var topGoods = ['ctr', 'cpc', 'cpm'].filter(function (k) { var st = statusOf(cur[k], BANDS[k]); return st && st.lvl === 'good'; });
+    if (topGoods.length >= 2) ins.push(['✅', '<b>Topo forte:</b> ' + topGoods.map(function (k) { return BANDS[k].label; }).join(', ') + ' dentro da faixa boa. A mídia entrega volume barato — o ganho está em converter melhor, não em gerar mais clique.']);
+    if (cur.vendas > 0 && ok(cur.roas) && cur.roas < 1) ins.push(['⛔', '<b>Maior gargalo — conversão em venda:</b> ROAS ' + M.x(cur.roas) + ' (abaixo de 1x). Com CTR/CPC ótimos, o furo está na oferta/página/checkout ou no volume ainda pequeno de vendas (' + int(cur.vendas) + ').']);
+    if (cur.lpv < cur.clk * 0.3) ins.push(['🔎', '<b>Rastreamento suspeito:</b> só ' + int(cur.lpv) + ' page views pra ' + int(cur.clk) + ' cliques. Provável pixel de LPV não disparando na landing — corrigir pra enxergar a connect rate real e o funil de verdade.']);
+    if (cur.vendas === 0 && cur.spend > 0) ins.push(['⏳', '<b>Sem venda ainda:</b> ' + M.money(cur.spend) + ' investidos, 0 venda no período. Se o topo está bom, priorize testar oferta/página e garantir o rastreamento antes de aumentar verba.']);
+    burning.slice(0, 2).forEach(function (a) { ins.push(['🔥', '<b>Queimando verba:</b> "' + esc(a.label) + '" gastou ' + M.money(a.spend) + ' sem compra (pixel) — candidato a pausar.']); });
+    winners.slice(0, 2).forEach(function (a) { ins.push(['⭐', '<b>Pode surpreender:</b> "' + esc(a.label) + '" custo/compra ' + M.money(a.custoCompra) + ' com ' + int(a.pur) + ' compra(s) px — colocar mais verba e criar variações.']); });
+    ins.push(['🧭', ok(cur.roas) && cur.roas >= 1 ? '<b>Resumo:</b> retorno acima de 1x — momento de escalar com cuidado mantendo o CAC.' : '<b>Resumo:</b> topo saudável, retorno ainda baixo. A alavanca do período é conversão (oferta/página/checkout) + rastreamento, não mais tráfego.']);
+    var insHtml = '<div>' + ins.map(function (i) { return '<div class="insight"><span class="ico">' + i[0] + '</span><span class="tx">' + i[1] + '</span></div>'; }).join('') + '</div>';
+    brief.push({ t: 'Insights e gargalos', h: insHtml, x: ins.map(function (i) { return '• ' + i[1].replace(/<[^>]+>/g, ''); }).join('\n') });
+
+    // próximos passos
+    var sug = [];
+    if (cur.lpv < cur.clk * 0.3) sug.push('Corrigir o rastreamento de Landing Page View / checkout no pixel — hoje o funil do meio está cego.');
+    if (ok(cur.roas) && cur.roas < 1) sug.push('Atacar conversão: testar oferta (preço/bônus/garantia), headline da página/VSL e reduzir fricção no checkout (Pix fácil).');
+    if (winners.length) sug.push('Escalar os campeões de custo/compra: ' + winners.slice(0, 3).map(function (a) { return esc(a.label); }).join(', ') + '.');
+    burning.slice(0, 2).forEach(function (a) { sug.push('Pausar/revisar "' + esc(a.label) + '" (' + M.money(a.spend) + ' sem compra).'); });
+    if (allTopGood) sug.push('Não mexer no topo (CTR/CPC/CPM já bons) — foco todo no fundo de funil.');
+    if (!sug.length) sug.push('Manter monitoramento diário do CAC e do volume de vendas.');
+    brief.push({ t: 'Próximos passos (sugestões)', h: '<ul>' + sug.map(function (s) { return '<li>' + s + '</li>'; }).join('') + '</ul>', x: sug.map(function (s) { return '• ' + s.replace(/<[^>]+>/g, ''); }).join('\n') });
+
+    var briefText = 'BRIEFING DO GESTOR — Michelle Ziade (Imersão)\n' + perLabel + '\n\n' + brief.map(function (s) { return s.t.toUpperCase() + '\n' + s.x; }).join('\n\n') + '\n\n— gerado pela dashboard (' + (D.generatedAt || '') + ' ' + (D.tz || 'BRT') + ')';
+
+    var briefingBlock = '<div class="briefing"><div class="bh"><h3>🔒 Briefing do gestor <span style="font-weight:500;font-size:12px;color:var(--ink-3)">— uso interno, não vai no print/cliente.</span></h3><button class="rep-copy" id="repCopy">📋 Copiar briefing</button></div>' +
+      brief.map(function (s) { return '<div class="brief-sub"><div class="bt">' + s.t + '</div>' + s.h + '</div>'; }).join('') +
+      '<div class="brief-scratch"><div class="bt" style="color:var(--brand)">✍️ Suas anotações (rascunho)</div><textarea data-note="scratch" rows="3" placeholder="rascunho livre pra você…"></textarea></div></div>';
+
+    $('reportView').innerHTML = '<div class="report"><div class="rep-head"><div><h2>📄 Relatório — ' + esc(perLabel) + '</h2>' +
+      '<p class="sub" style="margin-top:2px">Muda sozinho conforme o período · dados de ' + esc(D.generatedAt || '—') + '</p></div></div>' +
+      '<p class="sub" style="margin:0 0 8px">⬇️ Blocos visuais limpos (é o que você manda em print pro cliente). Seu <b style="color:var(--ink-2)">briefing interno</b> fica no final.</p>' +
+      secVisual + briefingBlock + '</div>';
+
+    // persistência local (anotações e links de anúncio)
+    Array.prototype.forEach.call(document.querySelectorAll('#reportView [data-note]'), function (t) {
+      var k = 'mz-note-' + t.dataset.note; try { t.value = localStorage.getItem(k) || ''; } catch (e) { }
+      t.oninput = function () { try { localStorage.setItem(k, t.value); } catch (e) { } };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#reportView [data-adlink]'), function (inp) {
+      var k = 'mz-adlink-' + decodeURIComponent(inp.dataset.adlink); try { inp.value = localStorage.getItem(k) || ''; } catch (e) { }
+      inp.oninput = function () { try { localStorage.setItem(k, inp.value); } catch (e) { } };
+    });
+    $('repCopy').onclick = function (e) {
+      var btn = e.currentTarget, scratch = ''; try { scratch = (localStorage.getItem('mz-note-scratch') || '').trim(); } catch (_) { }
+      var full = briefText + (scratch ? '\n\nSUAS ANOTAÇÕES\n' + scratch : '');
+      navigator.clipboard.writeText(full).then(function () { btn.textContent = '✅ Copiado!'; setTimeout(function () { btn.textContent = '📋 Copiar briefing'; }, 1800); }).catch(function () { btn.textContent = '❌ copie manualmente'; });
+    };
+  }
+
+  /* ================================================================ shell / roteamento */
+  function refresh() {
+    var len = diffDays(STATE.from, STATE.to) + 1;
+    $('cmpNote').textContent = STATE.compare
+      ? 'comparando com ' + brFull(dayAdd(dayAdd(STATE.from, -1), -(len - 1))) + ' – ' + brFull(dayAdd(STATE.from, -1)) + ' (' + len + (len > 1 ? ' dias' : ' dia') + ')'
+      : len + (len > 1 ? ' dias selecionados' : ' dia selecionado');
+    $('overviewView').hidden = STATE.tab !== 'overview';
+    $('trafficView').hidden = STATE.tab !== 'traffic';
+    $('reportView').hidden = STATE.tab !== 'report';
+    if (STATE.tab === 'overview') renderOverview();
+    else if (STATE.tab === 'traffic') renderTraffic();
+    else renderReport();
+  }
+  function setPeriod(from, to, preset) {
+    STATE.from = clampD(from); STATE.to = clampD(to); STATE.preset = preset || 'custom';
+    $('from').value = STATE.from; $('to').value = STATE.to;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-preset]'), function (b) { b.setAttribute('aria-pressed', b.dataset.preset === STATE.preset); });
+    refresh();
+  }
+
+  function shell() {
+    var m = D;
+    $('subtitle').innerHTML = '<b>Funil de venda direta</b> · faturamento real (Hotmart) · dados de ' + brFull(minDate) + ' a ' + brFull(maxDate) + ' · ' + int(daily.length) + ' dias com registro';
+    $('updated').textContent = 'atualizado ' + esc(m.generatedAt || '—') + ' ' + esc(m.tz || 'BRT');
+    $('taxBadge').textContent = TAX === 1 ? 'sem imposto' : 'imposto ×' + taxStr(TAX);
+    $('from').min = $('to').min = minDate; $('from').max = $('to').max = maxDate;
+
+    var totalSpend = daily.reduce(function (s, r) { return s + r.spend; }, 0);
+    var keys = arr(m.launchKeys).join(', ');
+    $('footer').innerHTML =
+      'Gasto total do período completo: ' + money(totalSpend) + ' (já com imposto ×' + taxStr(TAX) + '). Faturamento e vendas: <b>Hotmart</b> (fonte da verdade). ' +
+      'Atribuição por anúncio: <b>pixel</b> (Adveronix <code>2070377586792193</code>) — sinal de otimização, não faturamento. ' +
+      'ROAS/CAC usam só o investimento da campanha de <b>Venda</b>. Filtro do lançamento: campanhas contendo <b>' + esc(keys) + '</b>. Somente leitura. ' +
+      '<br><b>IC (iniciar checkout)</b> = quem chegou ao checkout da Hotmart (aprovadas + abandonos) · <b>Conv. checkout</b> = vendas ÷ IC.';
+
+    // presets
+    Array.prototype.forEach.call(document.querySelectorAll('[data-preset]'), function (b) {
+      b.onclick = function () {
+        var p = b.dataset.preset;
+        if (p === 'all') return setPeriod(minDate, maxDate, 'all');
+        if (p === 'today') return setPeriod(maxDate, maxDate, 'today');
+        if (p === 'yesterday') { var y = dayAdd(maxDate, -1); return setPeriod(y, y, 'yesterday'); }
+        if (p === 'month') return setPeriod(firstOfMonth(maxDate), maxDate, 'month');
+        var n = +p; return setPeriod(dayAdd(maxDate, -(n - 1)), maxDate, p);
       };
     });
+    function clampDates() { var f = $('from').value, t = $('to').value; if (!f || !t) return; if (f > t) { var tmp = f; f = t; t = tmp; } setPeriod(f, t, 'custom'); }
+    $('from').onchange = clampDates; $('to').onchange = clampDates;
+    $('cmp').onclick = function (e) { STATE.compare = !STATE.compare; e.currentTarget.classList.toggle('on', STATE.compare); e.currentTarget.setAttribute('aria-pressed', STATE.compare); refresh(); };
+
+    // abas
+    try { var tv = localStorage.getItem('mz-tab'); if (['overview', 'traffic', 'report'].indexOf(tv) >= 0) STATE.tab = tv; } catch (e) { }
+    Array.prototype.forEach.call(document.querySelectorAll('[data-tab]'), function (b) {
+      b.setAttribute('aria-selected', b.dataset.tab === STATE.tab);
+      b.onclick = function () {
+        STATE.tab = b.dataset.tab;
+        try { localStorage.setItem('mz-tab', STATE.tab); } catch (e) { }
+        Array.prototype.forEach.call(document.querySelectorAll('[data-tab]'), function (x) { x.setAttribute('aria-selected', x.dataset.tab === STATE.tab); });
+        refresh();
+      };
+    });
+
+    setPeriod(minDate, maxDate, 'all');
   }
 
-  function renderHint() {
-    var keys = arr(D.launchKeys).join(', ');
-    el('hint').innerHTML = 'Faturamento e vendas: <b>Hotmart</b> (fonte da verdade). ' +
-      'A tabela de otimização usa o <b>pixel</b> (Adveronix, <code>2070377586792193</code>) só para atribuir compras por anúncio — sinal de otimização, não de faturamento. ' +
-      'Filtro do lançamento: campanhas contendo <b>' + esc(keys) + '</b>. Gasto com imposto ×' + num2(D.tax || 1.1385) + '. ' +
-      'Somente leitura — nada é alterado nas planilhas. ' +
-      '<br><b>IC (iniciar checkout)</b> = quem chegou ao checkout da Hotmart (aprovadas + abandonos) · <b>Taxa de checkout</b> = IC ÷ LPV · <b>Conversão de checkout</b> = vendas ÷ IC. ' +
-      '<br>As campanhas do lançamento começaram no aquecimento (mai/jun) e as vendas em julho — use o seletor de período para focar na janela que interessa.';
-  }
+  /* ---------------------------------------------------------------- tema */
+  function applyTheme(t) { document.documentElement.dataset.theme = t; $('theme').textContent = t === 'dark' ? 'Claro' : 'Escuro'; try { localStorage.setItem('mz-theme', t); } catch (e) { } }
+  $('theme').onclick = function () { applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); };
+  try { var saved = localStorage.getItem('mz-theme'); applyTheme(saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')); } catch (e) { applyTheme('dark'); }
 
-  // ---------- boot ----------
-  el('upd').innerHTML = '<span class="dot"></span>Atualizado: ' + esc(D.generatedAt || '—') + ' ' + esc(D.tz || 'BRT');
-  el('taxNote').innerHTML = '💸 Gasto inclui imposto × ' + taxMult() + ' (13,85%)';
-  if (!daily.length) {
-    el('kpis').innerHTML = '<div class="empty">Sem dados. Rode o build.</div>';
-  } else {
-    initDateInputs();
-    render();
-  }
+  /* ---------------------------------------------------------------- boot */
+  TIP = $('tip');
+  var rt;
+  addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () { if (daily.length) refresh(); }, 180); });
+  if (!daily.length) { $('overviewView').innerHTML = '<div class="panel"><div class="loading">Sem dados. Rode o build.</div></div>'; }
+  else shell();
 })();
