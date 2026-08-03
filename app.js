@@ -767,6 +767,8 @@
   /* ---------------------------------------------------------------- tema */
   function applyTheme(t) { document.documentElement.dataset.theme = t; $('theme').textContent = t === 'dark' ? 'Claro' : 'Escuro'; try { localStorage.setItem('mz-theme', t); } catch (e) { } }
   $('theme').onclick = function () { applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); };
+  // Atualizar: recarrega buscando a última versão publicada do data.js (cache-bust já embutido no index.html)
+  $('refresh').onclick = function () { var b = this; b.textContent = '⏳ Atualizando…'; b.disabled = true; setTimeout(function () { location.reload(); }, 60); };
   try { var saved = localStorage.getItem('mz-theme'); applyTheme(saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')); } catch (e) { applyTheme('dark'); }
 
   /* ---------------------------------------------------------------- boot */
