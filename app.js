@@ -121,7 +121,7 @@
   /* ---------------------------------------------------------------- régua de benchmarks (Leandro)
      Classifica cada métrica em bom / médio / ruim. dir 'high' = maior é melhor. */
   var BANDS = {
-    ctr: { label: 'CTR', good: 0.025, mid: 0.01, dir: 'high', fmt: M.pct1 },
+    ctr: { label: 'CTR (link)', good: 0.01, mid: 0.006, dir: 'high', fmt: M.pct1 },  // CTR de cliques no link (Adveronix Link Clicks). Régua de link (~1%), não de CTR total.
     cpc: { label: 'CPC', good: 2, mid: 4, dir: 'low', fmt: M.money },
     cpm: { label: 'CPM', good: 35, mid: 60, dir: 'low', fmt: M.money },
     connect: { label: 'Connect rate', good: 0.90, mid: 0.70, dir: 'high', fmt: M.pct1 },
@@ -493,7 +493,7 @@
     var kpis = [
       kpi('Investimento', M.money0(cur.spend), 'Topo + Venda', miniDelta(cur.spend, prev && prev.spend, null)),
       kpi('CPM', M.money(cur.cpm), 'bom ≤ R$35', flagFor('cpm', cur.cpm)),
-      kpi('CTR', M.pct1(cur.ctr), 'bom ≥ 2,5%', flagFor('ctr', cur.ctr)),
+      kpi('CTR (link)', M.pct1(cur.ctr), 'bom ≥ 1%', flagFor('ctr', cur.ctr)),
       kpi('CPC', M.money(cur.cpc), 'bom ≤ R$2', flagFor('cpc', cur.cpc)),
       kpi('Cliques', M.int(cur.clk), int(cur.impr) + ' impressões', ''),
       kpi('Connect rate', M.pct1(cur.connect), 'LPV ÷ cliques ⚠️', flagFor('connect', cur.connect)),
@@ -590,7 +590,7 @@
       '<div class="rep-sec"><div class="step">2 · TOPO DE FUNIL (MÍDIA)</div><h3>🚀 Eficiência da mídia</h3><div class="rep-stats">' +
       repStat('CTR ' + selo('ctr', cur.ctr), M.pct1(cur.ctr)) + repStat('CPC ' + selo('cpc', cur.cpc), M.money(cur.cpc)) +
       repStat('CPM ' + selo('cpm', cur.cpm), M.money(cur.cpm)) + repStat('Impressões', int(cur.impr)) + repStat('Cliques', int(cur.clk)) + '</div>' +
-      '<p class="rep-p muted">Selos pela régua de benchmarks: CTR bom ≥ 2,5% · CPC bom ≤ R$2 · CPM bom ≤ R$35.</p></div>' +
+      '<p class="rep-p muted">Selos pela régua de benchmarks: CTR (link) bom ≥ 1% · CPC bom ≤ R$2 · CPM bom ≤ R$35.</p></div>' +
 
       '<div class="rep-sec"><div class="step">3 · FUNIL COMPLETO</div><h3>🔻 Do clique à venda</h3><div class="rep-stats">' +
       repStat('Page views', int(cur.lpv)) + repStat('Checkouts (IC)', int(cur.ic)) +
