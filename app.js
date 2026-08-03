@@ -13,6 +13,9 @@
   var daily = arr(D.daily).slice().sort(function (a, b) { return a.d < b.d ? -1 : a.d > b.d ? 1 : 0; });
   var grain = arr(D.grain);
   var TAX = D.tax || 1.1385;
+  // Checkout iniciado = PIXEL/Gerenciador (icPixel do Adveronix). Enquanto a coluna nao existir
+  // no relatorio (icPixel todos 0), cai no fallback Hotmart (vendas + abandonos de carrinho).
+  var HAS_PIXEL_IC = daily.some(function (d) { return (d.icPixel || 0) > 0; });
 
   /* ---------------------------------------------------------------- formato */
   var nf0 = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 });
@@ -64,7 +67,7 @@
   function within(d, from, to) { return d >= from && d <= to; }
 
   /* ---------------------------------------------------------------- agregação (daily) */
-  function blank() { return { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, vendas: 0, fat: 0, checkouts: 0 }; }
+  function blank() { return { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, vendas: 0, fat: 0, checkouts: 0, icPixel: 0 }; }
   function spendByFunnel(from, to) {
     var o = { Topo: 0, Venda: 0, Outros: 0, total: 0 };
     for (var i = 0; i < grain.length; i++) { var g = grain[i]; if (!within(g.d, from, to)) continue; o[funnelOf(g.camp)] += g.spend; o.total += g.spend; }
@@ -72,7 +75,8 @@
   }
   // derive: adiciona métricas calculadas a um agregado diário
   function derive(t) {
-    var ic = (t.vendas || 0) + (t.checkouts || 0);
+    // IC = checkout iniciado do PIXEL (Gerenciador). Fallback Hotmart (vendas + abandonos) enquanto a coluna nao existe.
+    var ic = HAS_PIXEL_IC ? (t.icPixel || 0) : ((t.vendas || 0) + (t.checkouts || 0));
     var o = Object.assign({}, t);
     o.ic = ic;
     o.cpm = div(t.spend * 1000, t.impr);
@@ -95,7 +99,7 @@
       var x = daily[i]; if (!within(x.d, from, to)) continue;
       t.spend += x.spend; t.impr += x.impr; t.clk += x.clk; t.lpv += x.lpv;
       t.purPixel += x.purPixel; t.valPixel += x.valPixel;
-      t.vendas += x.vendas; t.fat += x.fat; t.checkouts += x.checkouts;
+      t.vendas += x.vendas; t.fat += x.fat; t.checkouts += x.checkouts; t.icPixel += (x.icPixel || 0);
     }
     var sb = spendByFunnel(from, to);
     t.spendVenda = sb.Venda; t.spendTopo = sb.Topo; t.spendOutros = sb.Outros;
@@ -122,7 +126,7 @@
     cpm: { label: 'CPM', good: 35, mid: 60, dir: 'low', fmt: M.money },
     connect: { label: 'Connect rate', good: 0.90, mid: 0.70, dir: 'high', fmt: M.pct1 },
     cpic: { label: 'Custo/checkout', good: 20, mid: 40, dir: 'low', fmt: M.money },
-    convCheck: { label: 'Conv. checkout', good: 0.40, mid: 0.20, dir: 'high', fmt: M.pct1 }
+    convCheck: { label: 'Conv. checkout', good: 0.30, mid: 0.15, dir: 'high', fmt: M.pct1 }
   };
   function statusOf(v, b) {
     if (!ok(v)) return null;
@@ -732,7 +736,9 @@
       'Gasto total do período completo: ' + money(totalSpend) + ' (já com imposto ×' + taxStr(TAX) + '). Faturamento e vendas: <b>Hotmart</b> (fonte da verdade). ' +
       'Atribuição por anúncio: <b>pixel</b> (Adveronix <code>2070377586792193</code>) — sinal de otimização, não faturamento. ' +
       'ROAS/CAC usam só o investimento da campanha de <b>Venda</b>. Filtro do lançamento: campanhas contendo <b>' + esc(keys) + '</b>. Somente leitura. ' +
-      '<br><b>IC (iniciar checkout)</b> = quem chegou ao checkout da Hotmart (aprovadas + abandonos) · <b>Conv. checkout</b> = vendas ÷ IC.';
+      '<br><b>IC (iniciar checkout)</b> = ' + (HAS_PIXEL_IC
+        ? 'finalizações de compra iniciadas pelo <b>pixel/Gerenciador</b> — quem chegou ao checkout vindo do anúncio'
+        : 'quem chegou ao checkout da Hotmart (aprovadas + abandonos)') + ' · <b>Conv. checkout</b> = vendas ÷ IC.';
 
     // presets
     Array.prototype.forEach.call(document.querySelectorAll('[data-preset]'), function (b) {

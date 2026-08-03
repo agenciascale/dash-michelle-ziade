@@ -94,8 +94,22 @@ function JsonStr($items) {
 Write-Host "Baixando Queries (Adveronix)..."
 $q = Get-Csv $SHEET_QUERIES $GID_QUERIES
 # header: 0 Day,1 Campaign,2 AdSet,3 Ad,4 Spend,5 Impr,6 Reach,7 Clicks,8 LPV,9 Purch,10 Value
+# (+ opcional) coluna de CHECKOUT INICIADO do PIXEL ("Website Checkouts Initiated" /
+#   "Initiate Checkout" / "Finalizacao de compra"), localizada por NOME de cabecalho —
+#   robusto a posicao. Se a coluna nao existir, icpx=0 e o front usa fallback Hotmart.
 $grain = New-Object System.Collections.Generic.List[object]
 $dq = @{}   # date -> agregados adveronix do lancamento
+$icCol = -1
+if ($q.Count -gt 0) {
+  $hdr = $q[0]
+  for ($i = 0; $i -lt $hdr.Count; $i++) {
+    $h = Norm $hdr[$i]
+    # quer a CONTAGEM de "Website Checkouts Initiated" — ignora custo/valor/unique/mobile e o evento "Website Checkouts" (sem Initiated).
+    if ((($h -match 'CHECKOUT') -and ($h -match 'INITIAT') -and ($h -notmatch 'COST|CUSTO|VALUE|VALOR|UNIQUE|MOBILE|PER ')) -or (($h -match 'FINALIZ') -and ($h -match 'COMPRA') -and ($h -notmatch 'CUSTO|VALOR|VALUE'))) { $icCol = $i; break }
+  }
+}
+if ($icCol -ge 0) { Write-Host ("  coluna checkout-pixel: indice {0} ('{1}')" -f $icCol, $q[0][$icCol]) }
+else { Write-Host "  coluna checkout-pixel: NAO encontrada (front usa fallback Hotmart)" }
 $skipHdr = $true
 foreach ($r in $q) {
   if ($skipHdr) { $skipHdr = $false; continue }
@@ -107,11 +121,12 @@ foreach ($r in $q) {
   $spend = (ToNum $r[4]) * $TAX
   $impr  = [int](ToNum $r[5]); $reach = [int](ToNum $r[6]); $clk = [int](ToNum $r[7])
   $lpv   = [int](ToNum $r[8]); $pur = [int](ToNum $r[9]); $val = (ToNum $r[10])
+  $icpx  = if ($icCol -ge 0 -and $r.Count -gt $icCol) { [int](ToNum $r[$icCol]) } else { 0 }
   $grain.Add([ordered]@{ d=$day; camp=$camp; adset=("$($r[2])").Trim(); ad=("$($r[3])").Trim();
-    spend=[math]::Round($spend,2); impr=$impr; reach=$reach; clk=$clk; lpv=$lpv; pur=$pur; val=[math]::Round($val,2) })
-  if (-not $dq.ContainsKey($day)) { $dq[$day] = @{ spend=0.0; impr=0; clk=0; lpv=0; pur=0; val=0.0 } }
+    spend=[math]::Round($spend,2); impr=$impr; reach=$reach; clk=$clk; lpv=$lpv; pur=$pur; val=[math]::Round($val,2); icpx=$icpx })
+  if (-not $dq.ContainsKey($day)) { $dq[$day] = @{ spend=0.0; impr=0; clk=0; lpv=0; pur=0; val=0.0; icpx=0 } }
   $dq[$day].spend += $spend; $dq[$day].impr += $impr; $dq[$day].clk += $clk
-  $dq[$day].lpv += $lpv; $dq[$day].pur += $pur; $dq[$day].val += $val
+  $dq[$day].lpv += $lpv; $dq[$day].pur += $pur; $dq[$day].val += $val; $dq[$day].icpx += $icpx
 }
 Write-Host ("  linhas do lancamento: {0} | dias: {1}" -f $grain.Count, $dq.Keys.Count)
 
@@ -156,8 +171,9 @@ foreach ($day in $allDays) {
   $vend  = if ($s) { $s.vendas }    else { 0 }
   $fat   = if ($s) { $s.fat }       else { 0.0 }
   $chk   = if ($s) { $s.checkouts } else { 0 }
+  $icpx  = if ($a) { $a.icpx }      else { 0 }
   $daily.Add([ordered]@{ d=$day; spend=[math]::Round($spend,2); impr=$impr; clk=$clk; lpv=$lpv;
-    purPixel=$pur; valPixel=[math]::Round($pval,2); vendas=$vend; fat=[math]::Round($fat,2); checkouts=$chk })
+    purPixel=$pur; valPixel=[math]::Round($pval,2); vendas=$vend; fat=[math]::Round($fat,2); checkouts=$chk; icPixel=$icpx })
 }
 
 # ---------------- OUTPUT data.js ----------------
