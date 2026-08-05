@@ -83,6 +83,23 @@ function IsLaunch($campaign) {
   return $false
 }
 
+# Espelha o clean() do sck_passthrough.js (LP): espaco->hifen, so [A-Za-z0-9._-],
+# colapsa hifens, tira das pontas, corta em $max. Serve pra casar o SCK (campanha
+# limpa+truncada em 40) de volta com o nome cru da campanha do Adveronix.
+function CleanKey($s, $max) {
+  if ($null -eq $s) { return "" }
+  $v = ("$s")
+  try { $v = [Uri]::UnescapeDataString($v) } catch {}
+  $v = $v.Trim()
+  $v = $v -replace '\s+', '-'
+  $v = $v -replace '[^A-Za-z0-9._-]', ''
+  $v = $v -replace '-+', '-'
+  $v = $v -replace '^-+', ''
+  $v = $v -replace '-+$', ''
+  if ($max -gt 0 -and $v.Length -gt $max) { $v = $v.Substring(0, $max) }
+  return $v
+}
+
 function JsonStr($items) {
   # serializa cada item com ConvertTo-Json -Compress e junta -> garante array (evita bug de 1 elemento)
   if (-not $items -or $items.Count -eq 0) { return "[]" }
@@ -130,11 +147,35 @@ foreach ($r in $q) {
 }
 Write-Host ("  linhas do lancamento: {0} | dias: {1}" -f $grain.Count, $dq.Keys.Count)
 
+# mapa clean40 -> nome cru da campanha (pra casar o SCK das vendas de volta com a campanha).
+# COLLISION-AWARE: se 2+ campanhas geram a MESMA clean40 (ex.: nomes iguais nos 40 primeiros
+# chars, diferindo so na data no fim), a chave vira AMBIGUA e NAO atribui (evita venda no
+# lugar errado). So atribui quando a chave aponta pra 1 campanha unica.
+$campByKey = @{}
+$campKeyAmbig = @{}
+$seenCamp = @{}
+foreach ($g in $grain) {
+  if ($seenCamp.ContainsKey($g.camp)) { continue }
+  $seenCamp[$g.camp] = $true
+  $k = CleanKey $g.camp 40
+  if (-not $k) { continue }
+  if ($campByKey.ContainsKey($k)) { if ($campByKey[$k] -ne $g.camp) { $campKeyAmbig[$k] = $true } }
+  else { $campByKey[$k] = $g.camp }
+}
+$ambigN = $campKeyAmbig.Keys.Count
+if ($ambigN -gt 0) { Write-Host ("  ATENCAO: {0} chave(s) de campanha ambigua(s) no SCK (nomes iguais nos 40 primeiros chars) -> essas vendas ficam sem atribuicao" -f $ambigN) }
+
 # ---------------- VENDAS (Hotmart) ----------------
 Write-Host "Baixando Vendas (Hotmart)..."
 $v = Get-Csv $SHEET_VENDAS $GID_VENDAS
-# header: 0 Data/Hora,1 Evento,2 Transacao,3 Produto,4 Comprador,5 Email,6 Telefone,7 Valor,...
-$dv = @{}   # date -> { vendas, fat, checkouts }
+# header: 0 Data/Hora,1 Evento,2 Transacao,3 Produto,4 Comprador,5 Email,6 Telefone,7 Valor,... 12 Origem(SCK)
+$dv = @{}       # date -> { vendas, fat, checkouts }   (agregado da conta, como antes)
+$sales = @{}    # date -> camp -> { vendas, fat, checkouts }   (atribuido por SCK; camp "" = sem atribuicao)
+# acha a coluna do SCK/Origem por NOME de cabecalho (robusto a posicao)
+$sckCol = -1
+if ($v.Count -gt 0) { for ($i = 0; $i -lt $v[0].Count; $i++) { $h = Norm $v[0][$i]; if (($h -match 'SCK') -or ($h -match 'ORIGEM')) { $sckCol = $i; break } } }
+if ($sckCol -ge 0) { Write-Host ("  coluna SCK/Origem: indice {0} ('{1}')" -f $sckCol, $v[0][$sckCol]) } else { Write-Host "  coluna SCK/Origem: NAO encontrada" }
+$attrCount = 0
 $skipHdr = $true
 foreach ($r in $v) {
   if ($skipHdr) { $skipHdr = $false; continue }
@@ -144,16 +185,41 @@ foreach ($r in $v) {
   if ($dt -notmatch '^(\d{2})/(\d{2})/(\d{4})') { continue }
   $day = "{0}-{1}-{2}" -f $matches[3], $matches[2], $matches[1]
   $ev = ("$($r[1])").Trim().ToUpperInvariant()
+  # atribuicao por SCK: parte antes do 1o '|' = campanha limpa (casa com campByKey)
+  $attrCamp = ""
+  if ($sckCol -ge 0 -and $r.Count -gt $sckCol) {
+    $sckRaw = ("$($r[$sckCol])").Trim()
+    if ($sckRaw) {
+      try { $sckRaw = [Uri]::UnescapeDataString($sckRaw) } catch {}
+      $part0 = ($sckRaw -split '\|')[0]
+      $ck = CleanKey $part0 40
+      if ($ck -and $campByKey.ContainsKey($ck) -and -not $campKeyAmbig.ContainsKey($ck)) { $attrCamp = $campByKey[$ck] }
+    }
+  }
   if (-not $dv.ContainsKey($day)) { $dv[$day] = @{ vendas=0; fat=0.0; checkouts=0 } }
+  if (-not $sales.ContainsKey($day)) { $sales[$day] = @{} }
+  if (-not $sales[$day].ContainsKey($attrCamp)) { $sales[$day][$attrCamp] = @{ vendas=0; fat=0.0; checkouts=0 } }
   if ($ev -eq "PURCHASE_APPROVED") {
-    $dv[$day].vendas += 1
-    $dv[$day].fat += (ToNum $r[7])
+    $val = (ToNum $r[7])
+    $dv[$day].vendas += 1; $dv[$day].fat += $val
+    $sales[$day][$attrCamp].vendas += 1; $sales[$day][$attrCamp].fat += $val
+    if ($attrCamp -ne "") { $attrCount++ }
   } elseif ($ev -eq "PURCHASE_OUT_OF_SHOPPING_CART") {
     $dv[$day].checkouts += 1
+    $sales[$day][$attrCamp].checkouts += 1
   }
 }
 $totVendas = 0; ($dv.Values | ForEach-Object { $totVendas += $_.vendas })
-Write-Host ("  dias com evento: {0} | vendas aprovadas: {1}" -f $dv.Keys.Count, $totVendas)
+Write-Host ("  dias com evento: {0} | vendas aprovadas: {1} | vendas atribuidas por SCK: {2}" -f $dv.Keys.Count, $totVendas, $attrCount)
+
+# achata $sales -> lista [{d,camp,vendas,fat,checkouts}]
+$salesList = New-Object System.Collections.Generic.List[object]
+foreach ($day in $sales.Keys) {
+  foreach ($cmp in $sales[$day].Keys) {
+    $s = $sales[$day][$cmp]
+    $salesList.Add([ordered]@{ d=$day; camp=$cmp; vendas=$s.vendas; fat=[math]::Round($s.fat,2); checkouts=$s.checkouts })
+  }
+}
 
 # ---------------- MERGE daily ----------------
 $allDays = New-Object System.Collections.Generic.SortedSet[string]
@@ -183,6 +249,7 @@ $meta = [ordered]@{ generatedAt = $now.ToString("yyyy-MM-dd HH:mm"); tz="BRT"; t
 $js = "window.DASH=" + ($meta | ConvertTo-Json -Compress -Depth 4) + ";" + [Environment]::NewLine
 $js += "window.DASH.daily=" + (JsonStr $daily) + ";" + [Environment]::NewLine
 $js += "window.DASH.grain=" + (JsonStr $grain) + ";" + [Environment]::NewLine
+$js += "window.DASH.sales=" + (JsonStr $salesList) + ";" + [Environment]::NewLine
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText($OutFile, $js, $utf8NoBom)
