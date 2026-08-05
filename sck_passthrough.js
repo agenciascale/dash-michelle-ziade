@@ -1,7 +1,7 @@
 <!-- ============================================================
      Repasse de origem (Meta Ads -> Hotmart SCK) - Michelle Ziade
-     Cole ISTO no codigo do site (Hostinger: Configuracoes ->
-     Integracoes / Codigo personalizado -> antes do </body>).
+     Cole ISTO no codigo do site (Hostinger: Editar site ->
+     Configuracoes -> Integracoes / Codigo personalizado).
      Funciona em todas as paginas de uma vez.
 
      O que faz: le os UTMs que vem do anuncio na URL da landing e,
@@ -11,6 +11,12 @@
      Preserva o ?checkoutMode=10 que ja existe.
      Guarda os UTMs na sessao, entao sobrevive a navegacao entre
      paginas do funil.
+
+     v2 (05/08/2026): o construtor do Hostinger injeta os botoes DEPOIS
+     do load, entao o rewrite antigo (so no DOMContentLoaded) rodava
+     cedo demais e os botoes ficavam sem sck. Agora reescreve tambem
+     via MutationObserver + re-runs, pegando botoes criados a qualquer
+     momento. Por isso as vendas vinham com Origem(SCK) vazia.
      ============================================================ -->
 <script>
 (function () {
@@ -59,6 +65,7 @@
     var url;
     try { url = new URL(a.href); } catch (e) { return; }
     if (!HOTMART_RX.test(url.hostname)) return;
+    if (url.searchParams.get('sck')) return; // ja tem, nao mexe (evita retrabalho)
     if (t.src && !url.searchParams.get('src')) url.searchParams.set('src', t.src);
     if (t.sck && !url.searchParams.get('sck')) url.searchParams.set('sck', t.sck);
     // repassa os UTMs crus tambem (futuro-proof p/ analytics da Hotmart)
@@ -75,11 +82,28 @@
     document.querySelectorAll('a[href]').forEach(function (a) { rewrite(a, t); });
   }
 
-  // Reescreve no load...
+  // roda cedo, no load, e algumas vezes depois (Hostinger injeta botoes tarde)
   if (document.readyState !== 'loading') rewriteAll();
   else document.addEventListener('DOMContentLoaded', rewriteAll);
+  window.addEventListener('load', rewriteAll);
+  [400, 1000, 2000, 3500, 6000].forEach(function (ms) { setTimeout(rewriteAll, ms); });
 
-  // ...e tambem no instante do clique (pega botoes criados depois)
+  // MutationObserver: reescreve qualquer botao/link que apareca DEPOIS
+  var scheduled = false;
+  function schedule() {
+    if (scheduled) return; scheduled = true;
+    (window.requestAnimationFrame || function (f) { setTimeout(f, 16); })(function () {
+      scheduled = false; rewriteAll();
+    });
+  }
+  function startObserver() {
+    if (!window.MutationObserver || !document.body) return;
+    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.body) startObserver();
+  else document.addEventListener('DOMContentLoaded', startObserver);
+
+  // ...e tambem no instante do clique (ultima linha de defesa)
   document.addEventListener('click', function (e) {
     var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
     if (a) rewrite(a, buildTracking(collectUTMs()));
