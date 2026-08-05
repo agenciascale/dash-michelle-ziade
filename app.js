@@ -54,8 +54,15 @@
 
   var STATE = {
     from: minDate, to: maxDate, preset: 'all', compare: true, tab: 'overview',
-    metric: 'spend', treeSort: { key: 'spend', dir: -1 }, expanded: {}
+    metric: 'spend', treeSort: { key: 'spend', dir: -1 }, expanded: {}, camps: null
   };
+  // lista de campanhas presentes (por gasto desc)
+  var CAMP_SPEND = {}; grain.forEach(function (g) { CAMP_SPEND[g.camp] = (CAMP_SPEND[g.camp] || 0) + g.spend; });
+  var ALL_CAMPS = Object.keys(CAMP_SPEND).sort(function (a, b) { return CAMP_SPEND[b] - CAMP_SPEND[a]; });
+  // STATE.camps = null → todas; senão objeto {nome:true} com as selecionadas
+  function campOK(c) { return !STATE.camps || STATE.camps[c] === true; }
+  function campFilterActive() { return !!STATE.camps; }
+  function campSelectedCount() { return STATE.camps ? Object.keys(STATE.camps).filter(function (k) { return STATE.camps[k]; }).length : ALL_CAMPS.length; }
 
   /* ---------------------------------------------------------------- funil de campanha */
   function funnelOf(camp) {
@@ -70,7 +77,7 @@
   function blank() { return { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, vendas: 0, fat: 0, checkouts: 0, icPixel: 0 }; }
   function spendByFunnel(from, to) {
     var o = { Topo: 0, Venda: 0, Outros: 0, total: 0 };
-    for (var i = 0; i < grain.length; i++) { var g = grain[i]; if (!within(g.d, from, to)) continue; o[funnelOf(g.camp)] += g.spend; o.total += g.spend; }
+    for (var i = 0; i < grain.length; i++) { var g = grain[i]; if (!within(g.d, from, to)) continue; if (!campOK(g.camp)) continue; o[funnelOf(g.camp)] += g.spend; o.total += g.spend; }
     return o;
   }
   // derive: adiciona métricas calculadas a um agregado diário
@@ -95,24 +102,36 @@
   }
   function aggregate(from, to) {
     var t = blank();
-    for (var i = 0; i < daily.length; i++) {
-      var x = daily[i]; if (!within(x.d, from, to)) continue;
-      t.spend += x.spend; t.impr += x.impr; t.clk += x.clk; t.lpv += x.lpv;
-      t.purPixel += x.purPixel; t.valPixel += x.valPixel;
-      t.vendas += x.vendas; t.fat += x.fat; t.checkouts += x.checkouts; t.icPixel += (x.icPixel || 0);
+    // mídia vem do grain (tem campanha) → respeita o filtro de campanha
+    for (var i = 0; i < grain.length; i++) {
+      var g = grain[i]; if (!within(g.d, from, to)) continue; if (!campOK(g.camp)) continue;
+      t.spend += g.spend; t.impr += g.impr; t.clk += g.clk; t.lpv += g.lpv;
+      t.purPixel += g.pur; t.valPixel += g.val; t.icPixel += (g.icpx || 0);
+    }
+    // Hotmart (faturamento/vendas) é da CONTA toda, por data — SCK vazio, sem atribuição por campanha
+    for (var k = 0; k < daily.length; k++) {
+      var x = daily[k]; if (!within(x.d, from, to)) continue;
+      t.vendas += x.vendas; t.fat += x.fat; t.checkouts += x.checkouts;
     }
     var sb = spendByFunnel(from, to);
     t.spendVenda = sb.Venda; t.spendTopo = sb.Topo; t.spendOutros = sb.Outros;
     return derive(t);
   }
   function dailyRows(from, to) {
+    // mídia por dia vinda do grain (respeita filtro de campanha)
+    var md = {};
+    for (var j = 0; j < grain.length; j++) {
+      var g = grain[j]; if (!within(g.d, from, to)) continue; if (!campOK(g.camp)) continue;
+      var m = md[g.d] || (md[g.d] = { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, icPixel: 0, spendVenda: 0 });
+      m.spend += g.spend; m.impr += g.impr; m.clk += g.clk; m.lpv += g.lpv; m.purPixel += g.pur; m.valPixel += g.val; m.icPixel += (g.icpx || 0);
+      if (funnelOf(g.camp) === 'Venda') m.spendVenda += g.spend;
+    }
     var out = [];
     for (var i = 0; i < daily.length; i++) {
       var x = daily[i]; if (!within(x.d, from, to)) continue;
-      var t = Object.assign(blank(), x);
-      // gasto de venda por dia (via grain) — pra CAC/ROAS diário
-      var sv = 0; for (var j = 0; j < grain.length; j++) { var g = grain[j]; if (g.d === x.d && funnelOf(g.camp) === 'Venda') sv += g.spend; }
-      t.spendVenda = sv;
+      var m = md[x.d] || { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, icPixel: 0, spendVenda: 0 };
+      var t = Object.assign(blank(), { d: x.d, spend: m.spend, impr: m.impr, clk: m.clk, lpv: m.lpv, purPixel: m.purPixel, valPixel: m.valPixel, icPixel: m.icPixel, vendas: x.vendas, fat: x.fat, checkouts: x.checkouts });
+      t.spendVenda = m.spendVenda;
       out.push(derive(t));
     }
     return out;
@@ -299,7 +318,7 @@
   function buildTree(from, to) {
     var root = {};
     for (var i = 0; i < grain.length; i++) {
-      var g = grain[i]; if (!within(g.d, from, to)) continue;
+      var g = grain[i]; if (!within(g.d, from, to)) continue; if (!campOK(g.camp)) continue;
       var c = root[g.camp] || (root[g.camp] = tblank(g.camp));
       var s = c.kids[g.adset] || (c.kids[g.adset] = tblank(g.adset));
       var a = s.kids[g.ad] || (s.kids[g.ad] = tblank(g.ad));
@@ -319,7 +338,7 @@
   function adsByName(from, to) {
     var map = {};
     for (var i = 0; i < grain.length; i++) {
-      var g = grain[i]; if (!within(g.d, from, to)) continue;
+      var g = grain[i]; if (!within(g.d, from, to)) continue; if (!campOK(g.camp)) continue;
       var a = map[g.ad] || (map[g.ad] = tblank(g.ad));
       a.spend += g.spend; a.impr += g.impr; a.reach += g.reach; a.clk += g.clk; a.lpv += g.lpv; a.pur += g.pur; a.val += g.val;
     }
@@ -429,7 +448,7 @@
   };
   function renderFunilInv(from, to) {
     var g = {}, total = 0;
-    for (var i = 0; i < grain.length; i++) { var x = grain[i]; if (!within(x.d, from, to)) continue; var f = funnelOf(x.camp); (g[f] || (g[f] = { spend: 0, clk: 0, lpv: 0, pur: 0, impr: 0 })); g[f].spend += x.spend; g[f].clk += x.clk; g[f].lpv += x.lpv; g[f].pur += x.pur; g[f].impr += x.impr; total += x.spend; }
+    for (var i = 0; i < grain.length; i++) { var x = grain[i]; if (!within(x.d, from, to)) continue; if (!campOK(x.camp)) continue; var f = funnelOf(x.camp); (g[f] || (g[f] = { spend: 0, clk: 0, lpv: 0, pur: 0, impr: 0 })); g[f].spend += x.spend; g[f].clk += x.clk; g[f].lpv += x.lpv; g[f].pur += x.pur; g[f].impr += x.impr; total += x.spend; }
     var cards = ['Topo', 'Venda', 'Outros'].filter(function (k) { return g[k]; }).map(function (k) {
       var o = g[k], m = FUNIL_META[k], share = total ? o.spend / total : 0;
       var detail = k === 'Venda' ? (int(o.pur) + ' compra(s) px · ' + int(o.lpv) + ' LPV') : (int(o.impr) + ' impressões · ' + int(o.clk) + ' cliques');
@@ -703,9 +722,51 @@
     };
   }
 
+  /* ================================================================ filtro de campanha */
+  function setCamps(sel) {
+    // sel = array de nomes selecionados; null/vazio/todas → STATE.camps=null (todas)
+    if (!sel || sel.length === 0 || sel.length >= ALL_CAMPS.length) STATE.camps = null;
+    else { STATE.camps = {}; sel.forEach(function (n) { STATE.camps[n] = true; }); }
+    try { localStorage.setItem('mz-camps', STATE.camps ? JSON.stringify(Object.keys(STATE.camps)) : ''); } catch (e) { }
+    updateCampBtn();
+  }
+  function updateCampBtn() {
+    var b = $('campBtn'); if (!b) return;
+    b.textContent = (STATE.camps ? (campSelectedCount() + ' de ' + ALL_CAMPS.length + ' campanhas') : 'Todas as campanhas') + ' ▾';
+    b.classList.toggle('on', campFilterActive());
+  }
+  function renderCampPanel() {
+    var p = $('campPanel'); if (!p) return;
+    var allChecked = !STATE.camps;
+    var rows = ALL_CAMPS.map(function (c) {
+      var ck = allChecked || (STATE.camps && STATE.camps[c] === true);
+      return '<label class="dd-item"><input type="checkbox" data-camp="' + encodeURIComponent(c) + '"' + (ck ? ' checked' : '') + '><b class="dd-sp">' + money0(CAMP_SPEND[c]) + '</b><span class="dd-nm">' + esc(c) + '</span></label>';
+    }).join('');
+    p.innerHTML = '<div class="dd-head"><span>Filtrar campanhas</span><button class="dd-mini" id="campAll">Selecionar todas</button></div>' + rows;
+    function current() { var a = []; Array.prototype.forEach.call(p.querySelectorAll('[data-camp]'), function (cb) { if (cb.checked) a.push(decodeURIComponent(cb.dataset.camp)); }); return a; }
+    Array.prototype.forEach.call(p.querySelectorAll('[data-camp]'), function (cb) { cb.onchange = function () { setCamps(current()); refresh(); }; });
+    $('campAll').onclick = function () { Array.prototype.forEach.call(p.querySelectorAll('[data-camp]'), function (cb) { cb.checked = true; }); setCamps(null); refresh(); };
+  }
+  function initCampSelector() {
+    var b = $('campBtn'), p = $('campPanel'); if (!b || !p) return;
+    // restaura seleção salva
+    try { var saved = localStorage.getItem('mz-camps'); if (saved) { var arr = JSON.parse(saved).filter(function (n) { return ALL_CAMPS.indexOf(n) >= 0; }); if (arr.length && arr.length < ALL_CAMPS.length) { STATE.camps = {}; arr.forEach(function (n) { STATE.camps[n] = true; }); } } } catch (e) { }
+    updateCampBtn();
+    b.onclick = function (e) { e.stopPropagation(); var open = p.hidden; if (open) renderCampPanel(); p.hidden = !open; b.setAttribute('aria-expanded', String(open)); };
+    p.onclick = function (e) { e.stopPropagation(); };
+    document.addEventListener('click', function () { if (!p.hidden) { p.hidden = true; b.setAttribute('aria-expanded', 'false'); } });
+  }
+  function filterBarHTML() {
+    if (!campFilterActive()) return '';
+    return '<div class="filterbar">🔎 <b>Filtro de campanha ativo</b> — ' + campSelectedCount() + ' de ' + ALL_CAMPS.length + ' campanhas. ' +
+      'Mídia (investimento, CTR, CPC, CPM, cliques, page views, compras-pixel) e o funil estão filtrados. ' +
+      '<b>Faturamento e vendas (Hotmart)</b> seguem no <b>total da conta</b> — o SCK das vendas está vazio, então não há atribuição por campanha ainda.</div>';
+  }
+
   /* ================================================================ shell / roteamento */
   function refresh() {
     var len = diffDays(STATE.from, STATE.to) + 1;
+    $('filterBar').innerHTML = filterBarHTML();
     $('cmpNote').textContent = STATE.compare
       ? 'comparando com ' + brFull(dayAdd(dayAdd(STATE.from, -1), -(len - 1))) + ' – ' + brFull(dayAdd(STATE.from, -1)) + ' (' + len + (len > 1 ? ' dias' : ' dia') + ')'
       : len + (len > 1 ? ' dias selecionados' : ' dia selecionado');
@@ -767,6 +828,7 @@
       };
     });
 
+    initCampSelector();
     setPeriod(minDate, maxDate, 'all');
   }
 
