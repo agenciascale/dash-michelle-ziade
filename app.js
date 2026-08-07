@@ -63,8 +63,8 @@
   function campOK(c) { return !STATE.camps || STATE.camps[c] === true; }
   function campFilterActive() { return !!STATE.camps; }
   function campSelectedCount() { return STATE.camps ? Object.keys(STATE.camps).filter(function (k) { return STATE.camps[k]; }).length : ALL_CAMPS.length; }
-  // fonte da venda/faturamento exibido: com filtro de campanha = pixel (Adveronix); sem = Hotmart
-  function revSrc() { return campFilterActive() ? 'pixel' : 'Hotmart'; }
+  // fonte da venda/faturamento exibido: SEMPRE Hotmart (PURCHASE_APPROVED da planilha)
+  function revSrc() { return 'Hotmart'; }
 
   /* ---------------------------------------------------------------- funil de campanha */
   function funnelOf(camp) {
@@ -83,18 +83,19 @@
     return o;
   }
   // derive: adiciona métricas calculadas a um agregado diário.
-  // Fonte de VENDA/FATURAMENTO: Hotmart (real da conta) por padrão; com filtro de campanha
-  // ativo, usa o PIXEL (Adveronix, purPixel/valPixel) — que atribui compra por campanha.
+  // Fonte de VENDA/FATURAMENTO: SEMPRE Hotmart (PURCHASE_APPROVED da planilha de extração) —
+  // fonte da verdade, inclusive com filtro de campanha ativo. O pixel (Adveronix) fica só como
+  // sinal de otimização por anúncio, na aba Tráfego Pago.
   function derive(t) {
-    var usePixel = campFilterActive();
-    var vendas = usePixel ? (t.purPixel || 0) : (t.vendas || 0);
-    var fat = usePixel ? (t.valPixel || 0) : (t.fat || 0);
-    // denominador do ROAS/CAC: com pixel usa o gasto (filtrado) da(s) campanha(s); sem filtro, só invest. de Venda
-    var spendDen = usePixel ? t.spend : t.spendVenda;
+    var filtered = campFilterActive();
+    var vendas = (t.vendas || 0);   // Hotmart: contagem de PURCHASE_APPROVED
+    var fat = (t.fat || 0);         // Hotmart: soma do valor das aprovadas
+    // denominador do ROAS/CAC: com filtro usa o gasto (filtrado) da(s) campanha(s); sem filtro, só invest. de Venda
+    var spendDen = filtered ? t.spend : t.spendVenda;
     // IC = checkout iniciado do PIXEL (Gerenciador). Fallback Hotmart (vendas + abandonos) enquanto a coluna nao existe.
     var ic = HAS_PIXEL_IC ? (t.icPixel || 0) : ((t.vendas || 0) + (t.checkouts || 0));
     var o = Object.assign({}, t);
-    o.usePixel = usePixel;
+    o.usePixel = false; o.filtered = filtered;
     o.vendas = vendas; o.fat = fat;
     o.ic = ic;
     o.cpm = div(t.spend * 1000, t.impr);
@@ -389,8 +390,8 @@
           '<div class="hb-track"><div class="hb-fill" style="width:' + w.toFixed(0) + '%;background:' + col + '"></div></div></div>';
       }).join('') + '</div></div>';
 
-    var upx = cur.usePixel;
-    var invVal = upx ? cur.spend : cur.spendVenda, invPrev = prev && (upx ? prev.spend : prev.spendVenda), invLbl = upx ? 'filtrado' : 'em venda';
+    var flt = cur.filtered;
+    var invVal = flt ? cur.spend : cur.spendVenda, invPrev = prev && (flt ? prev.spend : prev.spendVenda), invLbl = flt ? 'filtrado' : 'em venda';
     var heroHTML =
       '<div class="hcard"><div class="hk">💸 Investimento <small>' + invLbl + '</small></div>' +
       '<div class="hv">' + M.money(invVal) + '</div><div class="hd">' + miniDelta(invVal, invPrev, null) + ' vs anterior</div></div>' +
@@ -398,11 +399,11 @@
       '<div class="hcard"><div class="hk">💰 Faturamento <small>' + revSrc() + '</small></div>' +
       '<div class="hv g">' + M.money(cur.fat) + '</div><div class="hd">' + miniDelta(cur.fat, prev && prev.fat, true) + ' vs anterior</div></div>' +
       '<div class="op">=</div>' +
-      '<div class="hcard roas"><div class="hk">📈 ROAS <small>' + (upx ? 'pixel' : 'retorno') + '</small></div>' +
+      '<div class="hcard roas"><div class="hk">📈 ROAS <small>retorno</small></div>' +
       '<div class="hv">' + M.x(cur.roas) + '</div><div class="hd">' + miniDelta(cur.roas, prev && prev.roas, true) + ' vs anterior</div></div>' +
       '<div class="op">·</div>' +
       '<div class="hcard"><div class="hk">🎯 CAC <small>custo/venda</small></div>' +
-      '<div class="hv">' + M.money(cur.cac) + '</div><div class="hd">' + int(cur.vendas) + ' venda(s) ' + (upx ? 'px' : '') + ' · ticket ' + M.money(cur.ticket) + '</div></div>';
+      '<div class="hv">' + M.money(cur.cac) + '</div><div class="hd">' + int(cur.vendas) + ' venda(s) · ticket ' + M.money(cur.ticket) + '</div></div>';
 
     var heroLine = ok(cur.roas)
       ? 'Cada <b>R$ 1,00</b> investido virou <b>' + M.money(cur.roas) + '</b> de faturamento (' + revSrc() + ') · ' + M.money(invVal) + ' → ' + M.money(cur.fat) + ' no período. Resultado de caixa (fat − invest. total): <b>' + M.money(cur.resultado) + '</b>.'
@@ -412,8 +413,8 @@
       '<div class="panel"><div class="health" id="health">' + healthHTML + '</div></div>' +
       '<div class="hero" id="hero">' + heroHTML + '</div>' +
       '<p class="hero-line" style="margin-bottom:10px">' + heroLine + '</p>' +
-      '<div class="scopenote"><span>' + (upx
-        ? '🎯 Com <b>filtro de campanha</b>, as <b>vendas/faturamento vêm do pixel (Adveronix)</b> — atribuição por campanha. ROAS/CAC usam o investimento filtrado (' + M.money(cur.spend) + '). O pixel difere do real da Hotmart por janela de atribuição.'
+      '<div class="scopenote"><span>' + (flt
+        ? '🎯 Com <b>filtro de campanha</b>, as <b>vendas/faturamento seguem a Hotmart</b> (PURCHASE_APPROVED — real da conta). ROAS/CAC usam o investimento filtrado (' + M.money(cur.spend) + '). A Hotmart não separa venda por campanha, então o nº de vendas é o total da conta no período.'
         : '🎯 <b>ROAS e CAC</b> usam só o investimento da campanha de <b>Venda</b> (' + M.money(cur.spendVenda) + '). O <b>Topo</b> (' + M.money(cur.spendTopo) + ') é aquecimento/conteúdo e entra no investimento total, não no retorno.') + '</span></div>' +
       '<div class="panel"><h2>Investimento por funil <span style="font-weight:500;color:var(--ink-3)">— com imposto ×' + taxStr(TAX) + '</span></h2><div class="funil-grid" id="funilInv"></div></div>' +
       '<div class="grid-funnel">' +
@@ -479,7 +480,7 @@
       { n: 'Cliques', big: M.int(c.clk), bg: '#63b015', ink: '#0c1400', cl: 'CPC', cv: M.money(c.cpc), sub: 'Clique → Page view <b>' + M.pct1(c.connect) + '</b>' },
       { n: 'Page views', big: M.int(c.lpv), bg: '#4a8a0a', ink: '#fff', cl: 'Custo / Page view', cv: M.money(c.cpl), sub: 'Page view → Checkout <b>' + M.pct1(c.lpCheck) + '</b>' },
       { n: 'Checkouts (IC)', big: M.int(c.ic), bg: '#356606', ink: '#fff', cl: 'Custo / Checkout', cv: M.money(c.cpic), sub: 'Checkout → Venda <b>' + M.pct1(c.convCheck) + '</b>' },
-      { n: c.usePixel ? 'Vendas (pixel)' : 'Vendas (Hotmart)', big: M.int(c.vendas), bg: '#244a04', ink: '#fff', cl: 'CAC', cv: M.money(c.cac), sub: 'ROAS <b>' + M.x(c.roas) + '</b> · ticket <b>' + M.money(c.ticket) + '</b>' }
+      { n: 'Vendas (Hotmart)', big: M.int(c.vendas), bg: '#244a04', ink: '#fff', cl: 'CAC', cv: M.money(c.cac), sub: 'ROAS <b>' + M.x(c.roas) + '</b> · ticket <b>' + M.money(c.ticket) + '</b>' }
     ];
     $('funnel').innerHTML = stages.map(function (s) {
       return '<div class="fstage"><div class="fl" style="background:' + s.bg + ';color:' + s.ink + '"><div class="fn">' + s.n + '</div><div class="fv">' + s.big + '</div></div>' +
@@ -614,14 +615,14 @@
     var dTbl = '<div class="tblwrap"><table style="min-width:520px"><thead><tr><th style="text-align:left">Dia</th><th>Gasto</th><th>Cliques</th><th>Checkouts</th><th>Vendas</th><th>Fat.</th><th>ROAS</th></tr></thead><tbody>' +
       dRows.slice().reverse().map(function (r) { return '<tr><td style="text-align:left">' + brFull(r.d) + '</td><td>' + M.money(r.spend) + '</td><td>' + int(r.clk) + '</td><td>' + int(r.ic) + '</td><td>' + int(r.vendas) + '</td><td>' + M.money(r.fat) + '</td><td>' + M.x(r.roas) + '</td></tr>'; }).join('') + '</tbody></table></div>';
 
-    var upx = cur.usePixel;
+    var flt = cur.filtered;
     var secVisual =
       '<div class="rep-sec"><div class="step">1 · RESUMO</div><h3>📊 Números do período</h3><div class="rep-stats">' +
       repStat('Investimento total', M.money(cur.spend)) + repStat('Invest. em venda', M.money(cur.spendVenda)) +
-      repStat('Faturamento (' + revSrc() + ')', M.money(cur.fat)) + repStat('Vendas (' + (upx ? 'px' : 'Hotmart') + ')', int(cur.vendas)) +
+      repStat('Faturamento (Hotmart)', M.money(cur.fat)) + repStat('Vendas (Hotmart)', int(cur.vendas)) +
       repStat('ROAS', M.x(cur.roas)) + repStat('CAC', M.money(cur.cac)) + '</div>' +
-      '<p class="rep-p muted">Resultado de caixa no período (faturamento − investimento total): <b>' + M.money(cur.resultado) + '</b>.' +
-      (upx ? ' <b>Filtro de campanha ativo:</b> vendas/faturamento vêm do <b>pixel (Adveronix)</b>, atribuído por campanha (difere do real da Hotmart por janela de atribuição).' : '') + '</p></div>' +
+      '<p class="rep-p muted">Resultado de caixa no período (faturamento − investimento total): <b>' + M.money(cur.resultado) + '</b>. Vendas/faturamento = <b>PURCHASE_APPROVED</b> da planilha da Hotmart (real da conta).' +
+      (flt ? ' <b>Filtro de campanha ativo:</b> a mídia (investimento/CTR/CPC) é filtrada, mas a Hotmart não separa venda por campanha — o nº de vendas é o total da conta no período.' : '') + '</p></div>' +
 
       '<div class="rep-sec"><div class="step">2 · TOPO DE FUNIL (MÍDIA)</div><h3>🚀 Eficiência da mídia</h3><div class="rep-stats">' +
       repStat('CTR ' + selo('ctr', cur.ctr), M.pct1(cur.ctr)) + repStat('CPC ' + selo('cpc', cur.cpc), M.money(cur.cpc)) +
@@ -776,8 +777,8 @@
   function filterBarHTML() {
     if (!campFilterActive()) return '';
     return '<div class="filterbar">🔎 <b>Filtro de campanha ativo</b> — ' + campSelectedCount() + ' de ' + ALL_CAMPS.length + ' campanhas. ' +
-      'Tudo filtrado por campanha. As <b>vendas e o faturamento vêm do PIXEL (Adveronix)</b>, que atribui compra por campanha — ' +
-      'não da Hotmart (que é o total real da conta, mostrado quando o filtro está desligado). O pixel difere do real por janela de atribuição/perda de sinal.</div>';
+      'A <b>mídia</b> (investimento, CTR, CPC, cliques, funil, árvore) é filtrada por campanha. As <b>vendas e o faturamento seguem a Hotmart</b> ' +
+      '(PURCHASE_APPROVED — real da conta): a Hotmart não separa venda por campanha, então esse nº é sempre o total da conta no período.</div>';
   }
 
   /* ================================================================ shell / roteamento */
