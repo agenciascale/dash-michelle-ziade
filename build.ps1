@@ -40,11 +40,23 @@ $OutFile = Join-Path $PSScriptRoot "data.js"
 # ---------------- HELPERS ----------------
 function Get-CsvFromUrl($url) {
   $tmp = [IO.Path]::GetTempFileName()
+  $lines = $null
   try {
-    $wc = New-Object System.Net.WebClient
-    $wc.Encoding = [Text.Encoding]::UTF8
-    $wc.DownloadFile($url, $tmp)   # WebClient segue redirect do gviz sozinho
-    $lines = [IO.File]::ReadAllLines($tmp, [Text.Encoding]::UTF8)
+    # gviz as vezes devolve 502/503 transitorio pro IP do runner -> retry com backoff
+    $maxTry = 5; $lastErr = $null
+    for ($try = 1; $try -le $maxTry; $try++) {
+      try {
+        $wc = New-Object System.Net.WebClient
+        $wc.Encoding = [Text.Encoding]::UTF8
+        $wc.DownloadFile($url, $tmp)   # WebClient segue redirect do gviz sozinho
+        $lines = [IO.File]::ReadAllLines($tmp, [Text.Encoding]::UTF8)
+        break
+      } catch {
+        $lastErr = $_
+        if ($try -lt $maxTry) { Write-Host ("  fetch falhou (tentativa {0}/{1}): {2} -> retry" -f $try, $maxTry, $_.Exception.Message); Start-Sleep -Seconds (2 * $try) }
+      }
+    }
+    if ($null -eq $lines) { throw $lastErr }
   } finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
   # gviz aspa TODO campo e separa por '","' ; sem newline embutido nos nossos dados
   $rows = New-Object System.Collections.Generic.List[object]
