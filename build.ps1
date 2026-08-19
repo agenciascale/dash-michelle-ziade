@@ -20,9 +20,15 @@ $ErrorActionPreference = "Stop"
 
 # ---------------- CONFIG ----------------
 $SHEET_QUERIES = "1DE7dykx2Wb13hsXU5X0eohNF_GYAZVa4uFzRE_FHRlw"  # Adveronix (Planilha Michelle Ziade)
-$GID_QUERIES   = "0"
-$SHEET_VENDAS  = "1eOfyHZhI7Bd6gWrkRIrcvbBHH6HFhCW5bvlntiJdJEA"  # Hotmart vendas
+$GID_QUERIES   = "0"                                            # aba "Página1 IHF" (gid 0 mesmo apos rename)
+$SHEET_VENDAS  = "1eOfyHZhI7Bd6gWrkRIrcvbBHH6HFhCW5bvlntiJdJEA"  # Hotmart vendas (Imersao)
 $GID_VENDAS    = "0"
+# --- PERPETUO "Obra na Pratica" (POP, low-ticket) ---
+# Nome da aba do Adveronix URL-encoded (ASCII) p/ PS5.1 nao mangear o acento: "Página2 POP"
+$POP_QUERIES_TAB_ENC = "P%C3%A1gina2%20POP"                      # aba filtrada em Contains POP
+$POP_KEY         = "POP"                                         # so campanhas com POP no nome
+$SHEET_VENDAS_POP = "1ad4BD2MWBodq4AVTBDYIc-l2aM8g7CeOGURFgqPFeHA" # Hotmart low-ticket (extracao nova)
+$GID_VENDAS_POP   = "0"
 $TAX           = 1.1385   # imposto Meta Ads
 
 # Filtro do LANCAMENTO (operacao atual): nome da campanha contem qualquer um destes (case/acento-insensitive)
@@ -32,8 +38,7 @@ $LAUNCH_KEYS   = @("IHF", "TF | TOPO", "TF|TOPO")
 $OutFile = Join-Path $PSScriptRoot "data.js"
 
 # ---------------- HELPERS ----------------
-function Get-Csv($sheetId, $gid) {
-  $url = "https://docs.google.com/spreadsheets/d/$sheetId/gviz/tq?tqx=out:csv&gid=$gid"
+function Get-CsvFromUrl($url) {
   $tmp = [IO.Path]::GetTempFileName()
   try {
     $wc = New-Object System.Net.WebClient
@@ -50,7 +55,24 @@ function Get-Csv($sheetId, $gid) {
     if ($t.EndsWith('"'))   { $t = $t.Substring(0, $t.Length - 1) }
     $rows.Add(($t -split '","'))
   }
-  return $rows
+  return ,$rows   # vírgula evita unroll quando a planilha só tem cabeçalho (1 linha)
+}
+function Get-Csv($sheetId, $gid) {
+  return Get-CsvFromUrl "https://docs.google.com/spreadsheets/d/$sheetId/gviz/tq?tqx=out:csv&gid=$gid"
+}
+function Get-CsvSheet($sheetId, $encSheet) {
+  # $encSheet ja vem URL-encoded (ASCII) — evita problema de encoding no PS5.1
+  return Get-CsvFromUrl "https://docs.google.com/spreadsheets/d/$sheetId/gviz/tq?tqx=out:csv&sheet=$encSheet"
+}
+# acha a coluna de "checkout iniciado" do pixel por NOME de cabecalho (robusto a posicao)
+function Find-IcCol($rows) {
+  if ($rows.Count -le 0) { return -1 }
+  $hdr = $rows[0]
+  for ($i = 0; $i -lt $hdr.Count; $i++) {
+    $h = Norm $hdr[$i]
+    if ((($h -match 'CHECKOUT') -and ($h -match 'INITIAT') -and ($h -notmatch 'COST|CUSTO|VALUE|VALOR|UNIQUE|MOBILE|PER ')) -or (($h -match 'FINALIZ') -and ($h -match 'COMPRA') -and ($h -notmatch 'CUSTO|VALOR|VALUE'))) { return $i }
+  }
+  return -1
 }
 
 function ToNum($s) {
@@ -242,6 +264,77 @@ foreach ($day in $allDays) {
     purPixel=$pur; valPixel=[math]::Round($pval,2); vendas=$vend; fat=[math]::Round($fat,2); checkouts=$chk; icPixel=$icpx })
 }
 
+# ================ PERPETUO "Obra na Pratica" (POP) ================
+# Midia = aba "Página2 POP" do Adveronix (Contains POP). Faturamento = planilha
+# Hotmart low-ticket nova (1 linha = 1 compra aprovada). Evergreen: sem meta, sem
+# split Topo/Venda; ROAS/CAC sobre TODO o gasto POP. Atribuicao por anuncio = pixel.
+Write-Host "Baixando POP (Adveronix Pagina2 POP)..."
+$qp = Get-CsvSheet $SHEET_QUERIES $POP_QUERIES_TAB_ENC
+$popGrain = New-Object System.Collections.Generic.List[object]
+$dqp = @{}
+$icColP = Find-IcCol $qp
+if ($icColP -ge 0) { Write-Host ("  POP checkout-pixel: indice {0}" -f $icColP) } else { Write-Host "  POP checkout-pixel: NAO encontrada (fallback vendas)" }
+$skipHdr = $true
+foreach ($r in $qp) {
+  if ($skipHdr) { $skipHdr = $false; continue }
+  if ($r.Count -lt 11) { continue }
+  $day = ("$($r[0])").Trim()
+  if ($day -notmatch '^\d{4}-\d{2}-\d{2}$') { continue }
+  $camp = ("$($r[1])").Trim()
+  if (-not (Norm $camp).Contains((Norm $POP_KEY))) { continue }   # so campanhas POP
+  $spend = (ToNum $r[4]) * $TAX
+  $impr  = [int](ToNum $r[5]); $reach = [int](ToNum $r[6]); $clk = [int](ToNum $r[7])
+  $lpv   = [int](ToNum $r[8]); $pur = [int](ToNum $r[9]); $val = (ToNum $r[10])
+  $icpx  = if ($icColP -ge 0 -and $r.Count -gt $icColP) { [int](ToNum $r[$icColP]) } else { 0 }
+  $popGrain.Add([ordered]@{ d=$day; camp=$camp; adset=("$($r[2])").Trim(); ad=("$($r[3])").Trim();
+    spend=[math]::Round($spend,2); impr=$impr; reach=$reach; clk=$clk; lpv=$lpv; pur=$pur; val=[math]::Round($val,2); icpx=$icpx })
+  if (-not $dqp.ContainsKey($day)) { $dqp[$day] = @{ spend=0.0; impr=0; clk=0; lpv=0; pur=0; val=0.0; icpx=0 } }
+  $dqp[$day].spend += $spend; $dqp[$day].impr += $impr; $dqp[$day].clk += $clk
+  $dqp[$day].lpv += $lpv; $dqp[$day].pur += $pur; $dqp[$day].val += $val; $dqp[$day].icpx += $icpx
+}
+Write-Host ("  POP linhas: {0} | dias midia: {1}" -f $popGrain.Count, $dqp.Keys.Count)
+
+Write-Host "Baixando Vendas POP (Hotmart low-ticket)..."
+$vp = Get-Csv $SHEET_VENDAS_POP $GID_VENDAS_POP
+# header: 0 data_venda,1 nome,2 email,3 telefone,4 utm_source,5 utm_campaign,6 utm_medium,7 utm_content,8 utm_term,9 faturamento,10 produto,...
+$dvp = @{}
+$fatColP = -1
+if ($vp.Count -gt 0) { for ($i = 0; $i -lt $vp[0].Count; $i++) { $h = Norm $vp[0][$i]; if ($h -match 'FATURAMENTO|VALOR') { $fatColP = $i; break } } }
+if ($fatColP -lt 0) { $fatColP = 9 }
+$skipHdr = $true
+foreach ($r in $vp) {
+  if ($skipHdr) { $skipHdr = $false; continue }
+  if ($r.Count -lt 2) { continue }
+  $dt = ("$($r[0])").Trim()
+  if ($dt -notmatch '^(\d{2})/(\d{2})/(\d{4})') { continue }   # dd/MM/yyyy [HH:mm:ss]
+  $day = "{0}-{1}-{2}" -f $matches[3], $matches[2], $matches[1]
+  $val = if ($r.Count -gt $fatColP) { ToNum $r[$fatColP] } else { 0.0 }
+  if (-not $dvp.ContainsKey($day)) { $dvp[$day] = @{ vendas=0; fat=0.0 } }
+  $dvp[$day].vendas += 1; $dvp[$day].fat += $val   # cada linha = 1 compra aprovada
+}
+$popTotVendas = 0; ($dvp.Values | ForEach-Object { $popTotVendas += $_.vendas })
+Write-Host ("  POP vendas: {0}" -f $popTotVendas)
+
+# merge POP daily (uniao dos dias de midia + vendas)
+$allDaysP = New-Object System.Collections.Generic.SortedSet[string]
+foreach ($k in $dqp.Keys) { [void]$allDaysP.Add($k) }
+foreach ($k in $dvp.Keys) { [void]$allDaysP.Add($k) }
+$popDaily = New-Object System.Collections.Generic.List[object]
+foreach ($day in $allDaysP) {
+  $a = $dqp[$day]; $s = $dvp[$day]
+  $spend = if ($a) { $a.spend } else { 0.0 }
+  $impr  = if ($a) { $a.impr }  else { 0 }
+  $clk   = if ($a) { $a.clk }   else { 0 }
+  $lpv   = if ($a) { $a.lpv }   else { 0 }
+  $pur   = if ($a) { $a.pur }   else { 0 }
+  $pval  = if ($a) { $a.val }   else { 0.0 }
+  $icpx  = if ($a) { $a.icpx }  else { 0 }
+  $vend  = if ($s) { $s.vendas } else { 0 }
+  $fat   = if ($s) { $s.fat }    else { 0.0 }
+  $popDaily.Add([ordered]@{ d=$day; spend=[math]::Round($spend,2); impr=$impr; clk=$clk; lpv=$lpv;
+    purPixel=$pur; valPixel=[math]::Round($pval,2); icPixel=$icpx; vendas=$vend; fat=[math]::Round($fat,2) })
+}
+
 # ---------------- OUTPUT data.js ----------------
 $now = [DateTime]::UtcNow.AddHours(-3)   # BRT
 $meta = [ordered]@{ generatedAt = $now.ToString("yyyy-MM-dd HH:mm"); tz="BRT"; tax=$TAX; launchKeys=$LAUNCH_KEYS; product="Imersao Transformando seu Conhecimento em Investimento" }
@@ -251,6 +344,13 @@ $js += "window.DASH.daily=" + (JsonStr $daily) + ";" + [Environment]::NewLine
 $js += "window.DASH.grain=" + (JsonStr $grain) + ";" + [Environment]::NewLine
 $js += "window.DASH.sales=" + (JsonStr $salesList) + ";" + [Environment]::NewLine
 
+# perpetuo (POP) - dataset separado consumido pela aba "Obra na Pratica".
+# Nome do produto (com acento/R$) fica no app.js pra evitar encoding no PS5.1.
+$popMeta = [ordered]@{ key=$POP_KEY; offer='17gdpna9' }
+$js += "window.DASH.pop=" + ($popMeta | ConvertTo-Json -Compress -Depth 4) + ";" + [Environment]::NewLine
+$js += "window.DASH.pop.daily=" + (JsonStr $popDaily) + ";" + [Environment]::NewLine
+$js += "window.DASH.pop.grain=" + (JsonStr $popGrain) + ";" + [Environment]::NewLine
+
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText($OutFile, $js, $utf8NoBom)
-Write-Host ("OK -> {0} ({1:n0} bytes) | dias={2} grain={3}" -f $OutFile, (Get-Item $OutFile).Length, $daily.Count, $grain.Count)
+Write-Host ("OK -> {0} ({1:n0} bytes) | Imersao dias={2} grain={3} | POP dias={4} grain={5}" -f $OutFile, (Get-Item $OutFile).Length, $daily.Count, $grain.Count, $popDaily.Count, $popGrain.Count)

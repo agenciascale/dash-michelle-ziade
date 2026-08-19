@@ -17,6 +17,14 @@
   // no relatorio (icPixel todos 0), cai no fallback Hotmart (vendas + abandonos de carrinho).
   var HAS_PIXEL_IC = daily.some(function (d) { return (d.icPixel || 0) > 0; });
 
+  /* ---- Perpétuo "Obra na Prática" (POP) — dataset separado (aba própria) ---- */
+  var POP = D.pop || {};
+  var popDaily = arr(POP.daily).slice().sort(function (a, b) { return a.d < b.d ? -1 : a.d > b.d ? 1 : 0; });
+  var popGrain = arr(POP.grain);
+  var HAS_POP = popDaily.length > 0 || popGrain.length > 0;
+  var HAS_POP_PIXEL_IC = popDaily.some(function (d) { return (d.icPixel || 0) > 0; });
+  var POP_PRODUCT = 'OBRA NA PRÁTICA! · low ticket R$ 97';
+
   /* ---------------------------------------------------------------- formato */
   var nf0 = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 });
   var nf1 = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -47,14 +55,16 @@
   function diffDays(a, b) { return Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 864e5); }
 
   /* ---------------------------------------------------------------- período */
-  var minDate = daily.length ? daily[0].d : '2026-01-01';
-  var maxDate = daily.length ? daily[daily.length - 1].d : '2026-01-01';
+  // range cobre Imersão + Perpétuo (os controles de período são compartilhados pelas abas)
+  var _allDates = daily.concat(popDaily).map(function (x) { return x.d; }).sort();
+  var minDate = _allDates.length ? _allDates[0] : '2026-01-01';
+  var maxDate = _allDates.length ? _allDates[_allDates.length - 1] : '2026-01-01';
   function firstOfMonth(ds) { return ds.slice(0, 7) + '-01'; }
   function clampD(ds) { return ds < minDate ? minDate : (ds > maxDate ? maxDate : ds); }
 
   var STATE = {
     from: minDate, to: maxDate, preset: 'all', compare: true, tab: 'overview',
-    metric: 'spend', treeSort: { key: 'spend', dir: -1 }, expanded: {}, camps: null
+    metric: 'spend', treeSort: { key: 'spend', dir: -1 }, expanded: {}, popExpanded: {}, camps: null
   };
   // lista de campanhas presentes (por gasto desc)
   var CAMP_SPEND = {}; grain.forEach(function (g) { CAMP_SPEND[g.camp] = (CAMP_SPEND[g.camp] || 0) + g.spend; });
@@ -740,6 +750,169 @@
     };
   }
 
+  /* ================================================================ PERPÉTUO (Obra na Prática · POP)
+     Aba própria, dataset window.DASH.pop (Adveronix Página2 POP + Hotmart low-ticket).
+     Evergreen: sem meta, sem split Topo/Venda; ROAS/CAC sobre todo o gasto POP.
+     Reusa os helpers puros (M, health, gauge, comboChart, statusOf, BANDS, TCOLS…). */
+  function popDeriveT(t) {
+    var ic = HAS_POP_PIXEL_IC ? (t.icPixel || 0) : (t.vendas || 0);
+    var o = Object.assign({}, t); o.ic = ic;
+    o.cpm = div(t.spend * 1000, t.impr); o.ctr = div(t.clk, t.impr); o.cpc = div(t.spend, t.clk);
+    o.cpl = div(t.spend, t.lpv); o.cpic = div(t.spend, ic); o.connect = div(t.lpv, t.clk);
+    o.cac = div(t.spend, t.vendas); o.roas = div(t.fat, t.spend); o.ticket = div(t.fat, t.vendas);
+    o.convCheck = div(t.vendas, ic); o.lpCheck = div(ic, t.lpv); o.resultado = (t.fat || 0) - (t.spend || 0);
+    return o;
+  }
+  function popBlank() { return { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, icPixel: 0, vendas: 0, fat: 0 }; }
+  function popAggregate(from, to) {
+    var t = popBlank();
+    for (var i = 0; i < popGrain.length; i++) { var g = popGrain[i]; if (!within(g.d, from, to)) continue; t.spend += g.spend; t.impr += g.impr; t.clk += g.clk; t.lpv += g.lpv; t.purPixel += g.pur; t.valPixel += g.val; t.icPixel += (g.icpx || 0); }
+    for (var k = 0; k < popDaily.length; k++) { var x = popDaily[k]; if (!within(x.d, from, to)) continue; t.vendas += x.vendas; t.fat += x.fat; }
+    return popDeriveT(t);
+  }
+  function popRows(from, to) {
+    var md = {};
+    for (var j = 0; j < popGrain.length; j++) { var g = popGrain[j]; if (!within(g.d, from, to)) continue; var m = md[g.d] || (md[g.d] = { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, icPixel: 0 }); m.spend += g.spend; m.impr += g.impr; m.clk += g.clk; m.lpv += g.lpv; m.purPixel += g.pur; m.valPixel += g.val; m.icPixel += (g.icpx || 0); }
+    var out = [];
+    for (var i = 0; i < popDaily.length; i++) { var x = popDaily[i]; if (!within(x.d, from, to)) continue; var m = md[x.d] || { spend: 0, impr: 0, clk: 0, lpv: 0, purPixel: 0, valPixel: 0, icPixel: 0 }; out.push(popDeriveT({ d: x.d, spend: m.spend, impr: m.impr, clk: m.clk, lpv: m.lpv, purPixel: m.purPixel, valPixel: m.valPixel, icPixel: m.icPixel, vendas: x.vendas, fat: x.fat })); }
+    return out;
+  }
+  function popTree(from, to) {
+    var root = {};
+    for (var i = 0; i < popGrain.length; i++) { var g = popGrain[i]; if (!within(g.d, from, to)) continue; var c = root[g.camp] || (root[g.camp] = tblank(g.camp)); var s = c.kids[g.adset] || (c.kids[g.adset] = tblank(g.adset)); var a = s.kids[g.ad] || (s.kids[g.ad] = tblank(g.ad)); a.spend += g.spend; a.impr += g.impr; a.reach += g.reach; a.clk += g.clk; a.lpv += g.lpv; a.pur += g.pur; a.val += g.val; }
+    var RAW = ['spend', 'impr', 'reach', 'clk', 'lpv', 'pur', 'val'];
+    function roll(node, key, level) { var kids = Object.keys(node.kids).map(function (k) { return roll(node.kids[k], key + ' ▸ ' + k, level + 1); }); var agg = tblank(node.label); RAW.forEach(function (k) { agg[k] = node[k]; }); kids.forEach(function (c) { RAW.forEach(function (k) { agg[k] += c[k]; }); }); var d = tderive(agg); d.key = key; d.level = level; d.kids = kids; return d; }
+    return Object.keys(root).map(function (k) { return roll(root[k], k, 0); });
+  }
+  var POP_DCOLS = [
+    { k: 'd', label: 'Dia' }, { k: 'spend', label: 'Invest.', fmt: M.money }, { k: 'cpm', label: 'CPM', fmt: M.money, scale: 'low' },
+    { k: 'cpc', label: 'CPC', fmt: M.money, scale: 'low' }, { k: 'ctr', label: 'CTR', fmt: M.pct1, scale: 'high' },
+    { k: 'lpv', label: 'LPV', fmt: M.int }, { k: 'connect', label: 'Connect', fmt: M.pct1, scale: 'high' },
+    { k: 'ic', label: 'Checkouts', fmt: M.int }, { k: 'lpCheck', label: 'PV→Check', fmt: M.pct1, scale: 'high' }, { k: 'cpic', label: 'C/Check', fmt: M.money, scale: 'low' },
+    { k: 'vendas', label: 'Vendas', fmt: M.int }, { k: 'convCheck', label: 'Check→Venda', fmt: M.pct1, scale: 'high' },
+    { k: 'fat', label: 'Fat.', fmt: M.money }, { k: 'cac', label: 'CAC', fmt: M.money, scale: 'low' }, { k: 'roas', label: 'ROAS', fmt: M.x, scale: 'high' }
+  ];
+  function popRenderFunnel(c) {
+    var pctOr = function (v) { return ok(v) ? M.pct1(v) : '—'; };
+    var stages = [
+      { n: 'Investimento', big: M.money(c.spend), bg: '#8fe01e', ink: '#0c1400', cl: 'Gasto bruto', cv: M.money(c.spend / TAX), sub: '+ imposto ×' + taxStr(TAX) + ' = <b>' + M.money(c.spend) + '</b>' },
+      { n: 'Impressões', big: M.int(c.impr), bg: '#7ecb1c', ink: '#0c1400', cl: 'CPM', cv: M.money(c.cpm), sub: 'CTR (link) <b>' + pctOr(c.ctr) + '</b>' },
+      { n: 'Cliques', big: M.int(c.clk), bg: '#63b015', ink: '#0c1400', cl: 'CPC', cv: M.money(c.cpc), sub: 'Clique → Page view <b>' + pctOr(c.connect) + '</b>' },
+      { n: 'Page views', big: M.int(c.lpv), bg: '#4a8a0a', ink: '#fff', cl: 'Custo / Page view', cv: M.money(c.cpl), sub: 'Page view → Checkout <b>' + pctOr(c.lpCheck) + '</b>' },
+      { n: 'Checkouts (IC)', big: M.int(c.ic), bg: '#356606', ink: '#fff', cl: 'Custo / Checkout', cv: M.money(c.cpic), sub: 'Checkout → Venda <b>' + pctOr(c.convCheck) + '</b>' },
+      { n: 'Vendas (Hotmart)', big: M.int(c.vendas), bg: '#244a04', ink: '#fff', cl: 'CAC', cv: M.money(c.cac), sub: 'ROAS <b>' + M.x(c.roas) + '</b> · ticket <b>' + M.money(c.ticket) + '</b>' }
+    ];
+    $('p_funnel').innerHTML = stages.map(function (s) {
+      return '<div class="fstage"><div class="fl" style="background:' + s.bg + ';color:' + s.ink + '"><div class="fn">' + s.n + '</div><div class="fv">' + s.big + '</div></div>' +
+        '<div class="fr"><div class="cl">' + s.cl + '</div><div class="cv">' + s.cv + '</div><div class="fsub">' + s.sub + '</div></div></div>';
+    }).join('');
+  }
+  function popRenderDaily(from, to) {
+    var rows = popRows(from, to).reverse();
+    var scales = {};
+    POP_DCOLS.filter(function (c) { return c.scale; }).forEach(function (c) { var vals = rows.filter(function (r) { return r.spend > 0 && ok(r[c.k]); }).map(function (r) { return r[c.k]; }); if (vals.length > 1) scales[c.k] = { min: Math.min.apply(null, vals), max: Math.max.apply(null, vals), dir: c.scale }; });
+    function heat(k, v) { var s = scales[k]; if (!s || !ok(v) || s.max === s.min) return ''; var t = (v - s.min) / (s.max - s.min); if (s.dir === 'low') t = 1 - t; var hue = t >= 0.5 ? 'var(--good)' : 'var(--critical)', strength = Math.round(Math.abs(t - 0.5) * 2 * 32); return strength < 6 ? '' : 'background:color-mix(in srgb,' + hue + ' ' + strength + '%,transparent)'; }
+    var head = POP_DCOLS.map(function (c) { return '<th>' + c.label + '</th>'; }).join('');
+    var body = rows.map(function (r) {
+      return '<tr>' + POP_DCOLS.map(function (c) {
+        if (c.k === 'd') return '<td>' + brFull(r.d) + '</td>';
+        var st = c.scale ? heat(c.k, r[c.k]) : '', v = c.fmt(r[c.k]);
+        return '<td>' + (st ? '<span class="cell-scale" style="' + st + '">' + v + '</span>' : v) + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    $('p_dtbl').innerHTML = '<thead><tr>' + head + '</tr></thead><tbody>' + (body || '<tr><td colspan="' + POP_DCOLS.length + '" style="text-align:center;color:var(--ink-3);padding:24px">Sem dados no período.</td></tr>') + '</tbody>';
+  }
+  function popRenderTree(from, to) {
+    var camps = popTree(from, to);
+    var key = STATE.treeSort.key, dir = STATE.treeSort.dir;
+    var scales = {};
+    TCOLS.filter(function (c) { return c.scale; }).forEach(function (c) { var vals = camps.filter(function (r) { return r.spend > 0 && ok(r[c.k]); }).map(function (r) { return r[c.k]; }); if (vals.length > 1) scales[c.k] = { min: Math.min.apply(null, vals), max: Math.max.apply(null, vals), dir: c.scale }; });
+    function shade(k, v) { var s = scales[k]; if (!s || !ok(v) || s.max === s.min) return ''; var t = (v - s.min) / (s.max - s.min); if (s.dir === 'low') t = 1 - t; if (t < 0.15) return ''; return 'background:color-mix(in srgb,var(--scale-ink) ' + Math.round(t * 32) + '%,transparent)'; }
+    var head = TCOLS.map(function (c) { var active = key === c.k; var arw = active ? (dir === 1 ? '▲' : '▼') : '▾'; return '<th data-k="' + c.k + '"' + (active ? ' data-active' : '') + '>' + c.label + '<span class="arw">' + arw + '</span></th>'; }).join('');
+    function flatten() { var out = []; sortNodes(camps, key, dir).forEach(function (c) { out.push(c); if (STATE.popExpanded[c.key]) sortNodes(c.kids, key, dir).forEach(function (s) { out.push(s); if (STATE.popExpanded[s.key]) sortNodes(s.kids, key, dir).forEach(function (a) { out.push(a); }); }); }); return out; }
+    function rowHTML(r) {
+      var exp = r.level < 2 && r.kids && r.kids.length > 0, open = STATE.popExpanded[r.key];
+      var caret = '<span class="caret">' + (exp ? '▸' : '') + '</span>';
+      return '<tr class="lv' + r.level + (exp ? ' exp' : '') + (open ? ' open' : '') + '" data-key="' + encodeURIComponent(r.key) + '">' +
+        '<td><span class="nm">' + caret + esc(r.label) + '</span></td>' +
+        TCOLS.slice(1).map(function (c) { var st = c.scale ? shade(c.k, r[c.k]) : ''; var v = c.fmt(r[c.k]); return '<td>' + (st ? '<span class="cell-scale" style="' + st + '">' + v + '</span>' : v) + '</td>'; }).join('') + '</tr>';
+    }
+    var RAW = ['spend', 'impr', 'reach', 'clk', 'lpv', 'pur', 'val'];
+    var tot = tderive(camps.reduce(function (t, r) { RAW.forEach(function (k) { t[k] += r[k]; }); return t; }, tblank('')));
+    var rows = flatten();
+    $('p_tbl').innerHTML = '<thead><tr>' + head + '</tr></thead><tbody>' +
+      (rows.map(rowHTML).join('') || '<tr><td colspan="' + TCOLS.length + '" style="text-align:center;color:var(--ink-3);padding:32px">Sem dados no período.</td></tr>') +
+      '</tbody><tfoot><tr><td>Total — ' + camps.length + ' campanha(s)</td>' + TCOLS.slice(1).map(function (c) { return '<td>' + c.fmt(tot[c.k]) + '</td>'; }).join('') + '</tr></tfoot>';
+    Array.prototype.forEach.call(document.querySelectorAll('#p_tbl tbody tr.exp'), function (tr) {
+      tr.querySelector('td:first-child').onclick = function () { var k = decodeURIComponent(tr.dataset.key); STATE.popExpanded[k] = !STATE.popExpanded[k]; popRenderTree(from, to); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#p_tbl thead th'), function (th) {
+      th.onclick = function () { var k = th.dataset.k; STATE.treeSort = key === k ? { key: k, dir: -dir } : { key: k, dir: k === 'label' ? 1 : -1 }; popRenderTree(from, to); };
+    });
+  }
+  function renderPerpetuo() {
+    var host = $('perpetuoView');
+    if (!HAS_POP) {
+      host.innerHTML = '<div class="panel" style="text-align:center;padding:36px 20px">' +
+        '<h2 style="justify-content:center">🏗️ ' + esc(POP_PRODUCT) + '</h2>' +
+        '<p class="note" style="max-width:640px;margin:8px auto 14px">Aba pronta e no aguardo. Assim que a campanha <b>POP</b> subir e cair a 1ª venda, os dados aparecem aqui sozinhos — mídia via <b>Adveronix (Página2 POP)</b> + faturamento real da <b>planilha Hotmart</b> do low ticket.</p>' +
+        '<div class="funil-grid">' + ['💸 Investimento', '💰 Faturamento', '📈 ROAS', '🎯 Vendas'].map(function (l) { return '<div class="finv"><div class="ftop">' + l + '</div><div class="fmain">—</div><div class="fmeta">aguardando dados</div></div>'; }).join('') + '</div></div>';
+      return;
+    }
+    var from = STATE.from, to = STATE.to, len = diffDays(from, to) + 1;
+    var pTo = dayAdd(from, -1), pFrom = dayAdd(pTo, -(len - 1));
+    var cur = popAggregate(from, to), prev = STATE.compare ? popAggregate(pFrom, pTo) : null;
+
+    var h = health(cur), scl = scoreColor(h.score);
+    var healthHTML = gauge(h.score, scl) +
+      '<div><p class="health-head">Saúde do funil' +
+      '<span class="tag" style="background:color-mix(in srgb,' + scl + ' 20%,transparent);color:' + scl + '">' + h.band + '</span>' +
+      '<span style="font-size:11.5px;font-weight:500;color:var(--ink-3);margin-left:6px">' + (h.score == null ? '—' : h.score + '/100') + ' · pela sua régua de benchmarks</span></p>' +
+      '<div class="hbars" style="margin-top:12px">' + h.bars.map(function (b) {
+        var col = b.score == null ? 'var(--ink-3)' : scoreColor(b.score);
+        var w = b.score == null ? 0 : Math.max(0, Math.min(100, b.score));
+        var lim = b.band.dir === 'high' ? 'bom ≥ ' + b.band.fmt(b.band.good) : 'bom ≤ ' + b.band.fmt(b.band.good);
+        return '<div class="hbar"><div class="hb-top"><em>' + b.label + ' <span style="color:var(--ink-3);font-weight:500">· ' + lim + '</span></em><strong>' + b.valueStr + '</strong></div>' +
+          '<div class="hb-track"><div class="hb-fill" style="width:' + w.toFixed(0) + '%;background:' + col + '"></div></div></div>';
+      }).join('') + '</div></div>';
+
+    var heroHTML =
+      '<div class="hcard"><div class="hk">💸 Investimento <small>com imposto</small></div><div class="hv">' + M.money(cur.spend) + '</div><div class="hd">' + miniDelta(cur.spend, prev && prev.spend, null) + ' vs anterior</div></div>' +
+      '<div class="op">→</div>' +
+      '<div class="hcard"><div class="hk">💰 Faturamento <small>Hotmart</small></div><div class="hv g">' + M.money(cur.fat) + '</div><div class="hd">' + miniDelta(cur.fat, prev && prev.fat, true) + ' vs anterior</div></div>' +
+      '<div class="op">=</div>' +
+      '<div class="hcard roas"><div class="hk">📈 ROAS <small>retorno</small></div><div class="hv">' + M.x(cur.roas) + '</div><div class="hd">' + miniDelta(cur.roas, prev && prev.roas, true) + ' vs anterior</div></div>' +
+      '<div class="op">·</div>' +
+      '<div class="hcard"><div class="hk">🎯 CAC <small>custo/venda</small></div><div class="hv">' + M.money(cur.cac) + '</div><div class="hd">' + int(cur.vendas) + ' venda(s) · ticket ' + M.money(cur.ticket) + '</div></div>';
+
+    var heroLine = ok(cur.roas)
+      ? 'Cada <b>R$ 1,00</b> investido virou <b>' + M.money(cur.roas) + '</b> de faturamento real (Hotmart) · ' + M.money(cur.spend) + ' → ' + M.money(cur.fat) + '. Resultado de caixa (fat − invest.): <b>' + M.money(cur.resultado) + '</b>.'
+      : 'Sem venda no período — ainda sem ROAS pra medir.';
+
+    host.innerHTML =
+      '<div class="scopenote"><span>🏗️ <b>' + esc(POP_PRODUCT) + '</b> — perpétuo. Mídia do <b>pixel (Adveronix · Página2 POP)</b>; faturamento real da <b>planilha Hotmart</b> do low ticket. Atribuição por anúncio = pixel.</span></div>' +
+      '<div class="panel"><div class="health">' + healthHTML + '</div></div>' +
+      '<div class="hero">' + heroHTML + '</div>' +
+      '<p class="hero-line" style="margin-bottom:10px">' + heroLine + '</p>' +
+      '<div class="grid-funnel">' +
+      '<div class="panel"><h2>Funil completo</h2><p class="note">Investimento → Impressões → Cliques → Page views → Checkouts → Vendas. Volume à esquerda; custo e taxa de passagem à direita.</p><div class="funnel" id="p_funnel"></div></div>' +
+      '<div class="panel"><h2>Resultados por dia</h2><p class="note">Barras = <b>Investimento c/ imposto</b> (esq.) · linha = <b>Vendas</b> (dir.).</p><div class="legend" id="p_legA"></div><div id="p_chA"></div>' +
+      '<h2 style="margin-top:20px">Faturamento × Investimento × ROAS</h2><p class="note">Barras = <b>Faturamento</b> e <b>Investimento</b> (esq.) · linha = <b>ROAS</b> (dir.).</p><div class="legend" id="p_legB"></div><div id="p_chB"></div></div>' +
+      '</div>' +
+      '<div class="panel"><h2>Visão diária — principais métricas por dia</h2><p class="note">Uma linha por dia, mais recente no topo. Heatmap por coluna: <b style="color:var(--good-text)">verde = melhor</b>, <b style="color:var(--critical)">vermelho = pior</b>.</p><div class="tblwrap"><table id="p_dtbl" class="daily"></table></div></div>' +
+      '<div class="panel"><h2>Otimização — Campanha › Conjunto › Anúncio</h2><p class="note">Clique numa <b>campanha</b>/<b>conjunto</b> pra expandir e nos cabeçalhos pra ordenar. Atribuição de compras por <b>pixel</b>. (px) = pixel.</p><div class="tblwrap"><table id="p_tbl" class="tree"></table></div></div>';
+
+    popRenderFunnel(cur);
+    var rows = popRows(from, to);
+    comboChart($('p_chA'), rows, { bars: [{ key: 'spend', color: 'var(--critical)', name: 'Investimento c/ imposto' }], line: { key: 'vendas', color: 'var(--good)', name: 'Vendas' }, leftFmt: M.money0, rightFmt: M.int, lineFmt: M.int });
+    comboChart($('p_chB'), rows, { bars: [{ key: 'fat', color: 'var(--good)', name: 'Faturamento' }, { key: 'spend', color: 'var(--critical)', name: 'Investimento c/ imposto' }], line: { key: 'roas', color: 'var(--ink-1)', name: 'ROAS' }, leftFmt: M.money0, rightFmt: M.x, lineFmt: M.x });
+    var lgSq = function (c) { return '<i style="background:' + c + '"></i>'; }, lgLn = function (c) { return '<i style="width:15px;height:0;border-top:2px solid ' + c + ';border-radius:0"></i>'; };
+    $('p_legA').innerHTML = '<span>' + lgSq('var(--critical)') + '<span style="color:var(--ink-2)">Investimento c/ imposto</span></span><span>' + lgLn('var(--good)') + '<span style="color:var(--ink-2)">Vendas (eixo dir.)</span></span>';
+    $('p_legB').innerHTML = '<span>' + lgSq('var(--good)') + '<span style="color:var(--ink-2)">Faturamento</span></span><span>' + lgSq('var(--critical)') + '<span style="color:var(--ink-2)">Investimento</span></span><span>' + lgLn('var(--ink-1)') + '<span style="color:var(--ink-2)">ROAS (eixo dir.)</span></span>';
+    popRenderDaily(from, to);
+    popRenderTree(from, to);
+  }
+
   /* ================================================================ filtro de campanha */
   function setCamps(sel) {
     // sel = array de nomes selecionados; null/vazio/todas → STATE.camps=null (todas)
@@ -784,16 +957,21 @@
   /* ================================================================ shell / roteamento */
   function refresh() {
     var len = diffDays(STATE.from, STATE.to) + 1;
-    $('filterBar').innerHTML = filterBarHTML();
+    var isPop = STATE.tab === 'perpetuo';
+    // filtro de campanha e sua barra só valem pras abas da Imersão (POP tem dataset próprio)
+    $('filterBar').innerHTML = isPop ? '' : filterBarHTML();
+    var cr = document.querySelector('.camprow'); if (cr) cr.style.display = isPop ? 'none' : '';
     $('cmpNote').textContent = STATE.compare
       ? 'comparando com ' + brFull(dayAdd(dayAdd(STATE.from, -1), -(len - 1))) + ' – ' + brFull(dayAdd(STATE.from, -1)) + ' (' + len + (len > 1 ? ' dias' : ' dia') + ')'
       : len + (len > 1 ? ' dias selecionados' : ' dia selecionado');
     $('overviewView').hidden = STATE.tab !== 'overview';
     $('trafficView').hidden = STATE.tab !== 'traffic';
     $('reportView').hidden = STATE.tab !== 'report';
+    $('perpetuoView').hidden = !isPop;
     if (STATE.tab === 'overview') renderOverview();
     else if (STATE.tab === 'traffic') renderTraffic();
-    else renderReport();
+    else if (STATE.tab === 'report') renderReport();
+    else renderPerpetuo();
   }
   function setPeriod(from, to, preset) {
     STATE.from = clampD(from); STATE.to = clampD(to); STATE.preset = preset || 'custom';
@@ -835,7 +1013,7 @@
     $('cmp').onclick = function (e) { STATE.compare = !STATE.compare; e.currentTarget.classList.toggle('on', STATE.compare); e.currentTarget.setAttribute('aria-pressed', STATE.compare); refresh(); };
 
     // abas
-    try { var tv = localStorage.getItem('mz-tab'); if (['overview', 'traffic', 'report'].indexOf(tv) >= 0) STATE.tab = tv; } catch (e) { }
+    try { var tv = localStorage.getItem('mz-tab'); if (['overview', 'traffic', 'report', 'perpetuo'].indexOf(tv) >= 0) STATE.tab = tv; } catch (e) { }
     Array.prototype.forEach.call(document.querySelectorAll('[data-tab]'), function (b) {
       b.setAttribute('aria-selected', b.dataset.tab === STATE.tab);
       b.onclick = function () {
